@@ -1,0 +1,1586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <meta name="apple-mobile-web-app-title" content="Health Log"/>
+  <title>Munir · Health Log</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#e8e0d0;font-family:Georgia,serif;}
+    ::-webkit-scrollbar{width:6px;}
+    ::-webkit-scrollbar-track{background:#ddd5c4;}
+    ::-webkit-scrollbar-thumb{background:#b8b0a0;border-radius:3px;}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // ── Supabase credentials ──
+    const SUPABASE_URL = "https://gcfhigxjucnwilhleswl.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdjZmhpZ3hqdWNud2lsaGxlc3dsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMjA2NzgsImV4cCI6MjA4ODU5NjY3OH0.GBcpR4D8GN4isl6i48BtDS7gTD3l_6D9mzMi5gU5ix4";
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const EXERCISE_PRESETS = [
+  { id: "cardio",  label: "Cardio",     subtasks: ["20 min cardio", "Stretching", "Shower"] },
+  { id: "core",    label: "Core",       subtasks: ["20 min core", "Stretching", "Shower"] },
+  { id: "stretch", label: "Stretching", subtasks: ["Stretching session", "Shower"] },
+];
+const DEFAULT_TASKS = [
+  { id: "reading", label: "Reading + Music",       subtasks: [] },
+  { id: "project", label: "GoFundMe / Peer Support", subtasks: [] },
+  { id: "piano",   label: "Piano",                 subtasks: [] },
+];
+const TRACKED_TASK_LABELS = ["Reading + Music", "GoFundMe / Peer Support", "Piano"];
+const AUTONOMIC_TRIGGERS  = ["Cognitive overexertion","Creative work","Sensory overload","Taper side effect","Social stress","Unknown","Other"];
+const EPISODE_SYMPTOMS    = ["Aphasia","BP spike","HR spike","Chest pressure","Sensory hypersensitivity","Hyperfocus/attention seizure","Confusion","Panic","Shortness of breath","Dizziness"];
+
+// ─── COLORS ───────────────────────────────────────────────────────────────────
+const C = {
+  bg:        "#e8e0d0",
+  bgCard:    "#ddd5c4",
+  bgInset:   "#cec6b4",
+  bgEp:      "#f0ddd8",
+  bgPrn:     "#f5ecd0",
+  bgDone:    "#d8eadc",
+  border:    "#b8b0a0",
+  borderEp:  "#c09088",
+  borderPrn: "#c8a840",
+  borderDone:"#88b090",
+  text:      "#2a2418",
+  textSec:   "#4a4438",
+  textMid:   "#7a7268",
+  textFaint: "#9a9288",
+  // data colors — all distinct
+  red:       "#cc2200",   // episode
+  redLight:  "#dd3311",
+  orange:    "#cc8800",   // PRN — clearly different from red
+  orangeLight:"#dd9900",
+  green:     "#2a6a3a",
+  greenLight:"#3a8a4a",
+  blue:      "#2255aa",   // clonazepam scheduled
+  blueLight: "#3366cc",
+  sleep:     "#1a1a1a",   // sleep hours — dark/black
+  today:     "#304898",
+};
+
+// ─── MEAL SCORING ─────────────────────────────────────────────────────────────
+const MEAL_SIGNALS = {
+  fiber:        { words:["vegetable","vegetables","broccoli","spinach","kale","carrot","beans","lentils","chickpeas","oats","whole grain","whole wheat","brown rice","quinoa","apple","pear","berries","avocado","cabbage","zucchini","nopal","frijoles","verduras","ensalada","chia","linaza"], weight:1.8 },
+  lean_protein: { words:["chicken","turkey","fish","salmon","tuna","eggs","egg","tofu","legumes","bean","lentil","shrimp","pollo","atún","huevo","huevos"], weight:1.5 },
+  healthy_fat:  { words:["avocado","aguacate","olive oil","nuts","almonds","walnuts","seeds","salmon","sardines"], weight:1.2 },
+  whole_food:   { words:["fruit","salad","soup","caldo","ensalada","fruta","steamed","grilled","baked","roasted","fresh","fresco"], weight:1.0 },
+  refined_carb: { words:["white bread","white rice","tortilla","pan dulce","pastry","cereal","sugary"], weight:-0.8 },
+  processed:    { words:["hot dog","sausage","salchicha","chorizo","processed","nugget","instant","ramen","chips","chicharron","chicharrón","junk","fast food","pizza","burger","hamburger"], weight:-2.0 },
+  fried:        { words:["fried","frito","frita","deep fried","fritas","fritos"], weight:-1.5 },
+  sugar:        { words:["candy","chocolate","cake","cookie","donut","soda","refresco","azúcar","azucar","ice cream","helado","gansito","marinela","bimbo"], weight:-2.0 },
+  dairy_fat:    { words:["crema","cream","queso","cheese"], weight:-0.4 },
+};
+function scoreMealItem(desc) {
+  const d = desc.toLowerCase(); let score = 5.0;
+  Object.entries(MEAL_SIGNALS).forEach(([,{words,weight}]) => words.forEach(w => { if(d.includes(w)) score+=weight; }));
+  score = Math.max(1, Math.min(10, Math.round(score*10)/10));
+  const color = score>=7?"#3a7a4a":score>=5?"#7a6a20":"#aa2200";
+  return { score, color, label: score>=7?"Good":score>=5?"Fair":"Poor" };
+}
+function scoreDayMeals(meals) {
+  if (!meals||!meals.length) return null;
+  const t = meals.map(m=>m.description.toLowerCase()).join(" ");
+  const hasFiber=MEAL_SIGNALS.fiber.words.some(w=>t.includes(w)), hasProtein=MEAL_SIGNALS.lean_protein.words.some(w=>t.includes(w));
+  const hasHF=MEAL_SIGNALS.healthy_fat.words.some(w=>t.includes(w)), hasFried=MEAL_SIGNALS.fried.words.some(w=>t.includes(w));
+  const hasSugar=MEAL_SIGNALS.sugar.words.some(w=>t.includes(w)), hasProc=MEAL_SIGNALS.processed.words.some(w=>t.includes(w));
+  let s = meals.length>=3?6.0:meals.length===2?4.5:3.0;
+  if(hasFiber)s+=1.2; if(hasProtein)s+=1.2; if(hasHF)s+=0.6;
+  if(hasFried)s-=1.2; if(hasSugar)s-=1.0; if(hasProc)s-=1.5;
+  s=Math.max(1,Math.min(10,Math.round(s*10)/10));
+  const flags=[];
+  if(meals.length<3)flags.push(`⚠ ${meals.length} meal${meals.length>1?"s":""} logged`);
+  if(!hasFiber)flags.push("⚠ No fiber"); if(!hasProtein)flags.push("⚠ No lean protein");
+  if(hasFried)flags.push("⚠ Fried"); if(hasSugar)flags.push("⚠ Sugar"); if(hasProc)flags.push("⚠ Processed");
+  return { score:s, color:s>=7?"#3a7a4a":s>=5?"#7a6a20":"#aa2200", flags, meals:meals.length };
+}
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+const todayStr = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const localDate = (s) => new Date(s+"T12:00:00");
+const fmt      = (d) => localDate(d).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"});
+const fmtShort = (d) => localDate(d).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
+const fmtMed   = (d) => { const dt=localDate(d); return `${dt.toLocaleDateString("en-US",{weekday:"short"})} ${dt.getDate()}`; };
+const addDays  = (s,n) => { const d=localDate(s); d.setDate(d.getDate()+n); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const emptyDay = (date) => ({ date, sleep:[], exercise:null, tasks:DEFAULT_TASKS.map(t=>({...t,done:false,subtasks:[]})), clonazepam:{doses:[],prn:[]}, episode:null, meals:[], notes:"" });
+
+// ─── SLEEP ATTRIBUTION ────────────────────────────────────────────────────────
+// Hard rule: sleep starting at or after 19:00 (7PM) belongs to the NEXT day.
+// This means "Monday's sleep" = sleep starting Sun 7PM through Mon 6:59PM.
+function parseTimeToMinutes(str) {
+  if(!str) return null;
+  const s=str.replace(/[~≈]/g,"").trim().toLowerCase();
+  const ap=s.match(/(\d{1,2}):(\d{2})\s*(am|pm)/);
+  if(ap){let h=parseInt(ap[1]);const m=parseInt(ap[2]),p=ap[3];if(p==="am"&&h===12)h=0;if(p==="pm"&&h!==12)h+=12;return h*60+m;}
+  const aps=s.match(/(\d{1,2})\s*(am|pm)/);
+  if(aps){let h=parseInt(aps[1]);const p=aps[2];if(p==="am"&&h===12)h=0;if(p==="pm"&&h!==12)h+=12;return h*60;}
+  const h24=s.match(/^(\d{1,2}):(\d{2})$/);
+  if(h24)return parseInt(h24[1])*60+parseInt(h24[2]);
+  return null;
+}
+function calcSleepMinutes(from,to) {
+  const f=(from||"").replace(/\(.*\)/g,"").trim(),t=(to||"").replace(/\(.*\)/g,"").trim();
+  const fM=parseTimeToMinutes(f),tM=parseTimeToMinutes(t);
+  if(fM===null||tM===null)return null;
+  let diff=tM-fM; if(diff<0)diff+=1440; if(diff===0)return null; return diff;
+}
+function totalSleepMinutes(blocks) {
+  if(!blocks||!blocks.length)return null;
+  let total=0,n=0;
+  blocks.forEach(s=>{const m=calcSleepMinutes(s.from,s.to);if(m!==null&&m>0){total+=m;n++;}});
+  return n>0?total:null;
+}
+// Returns the "display date" a sleep block belongs to.
+// If sleep starts >= 19:00 (7PM), it belongs to next day.
+function sleepBlockOwnerDate(dateStr, fromStr) {
+  const cleaned=(fromStr||"").replace(/\(.*\)/g,"").trim();
+  const mins=parseTimeToMinutes(cleaned);
+  if(mins===null)return dateStr;
+  return mins>=19*60 ? addDays(dateStr,1) : dateStr;
+}
+// Get sleep blocks attributed to a display date (from previous day's late sleep + same day's early sleep)
+function getSleepForDisplayDate(displayDate, daysData) {
+  const blocks=[];
+  // Blocks from previous day that started >= 7PM
+  const prev=addDays(displayDate,-1);
+  (daysData[prev]?.sleep||[]).forEach(b=>{
+    if(sleepBlockOwnerDate(prev,b.from)===displayDate) blocks.push(b);
+  });
+  // Blocks from same day that started before 7PM
+  (daysData[displayDate]?.sleep||[]).forEach(b=>{
+    if(sleepBlockOwnerDate(displayDate,b.from)===displayDate) blocks.push(b);
+  });
+  return blocks;
+}
+
+function fmtHours(minutes) {
+  if(minutes===null||minutes===undefined)return null;
+  const h=Math.floor(minutes/60),m=minutes%60;
+  return m===0?`${h}h`:`${h}h${m}m`;
+}
+function sleepQualityColor(minutes) {
+  if(!minutes)return C.textFaint;
+  if(minutes>=420)return C.green;
+  if(minutes>=300)return "#8a6a00";
+  if(minutes>=120)return "#9a4a00";
+  return C.red;
+}
+
+// ─── AVERAGES (never future, never untracked) ─────────────────────────────────
+const today = todayStr();
+function pastOnly(dates) { return dates.filter(d=>d<=today); }
+function avgSleep(dates,daysData) {
+  const vals=pastOnly(dates).map(d=>totalSleepMinutes(getSleepForDisplayDate(d,daysData))).filter(m=>m!==null&&m>0);
+  return vals.length?Math.round(vals.reduce((a,b)=>a+b,0)/vals.length):null;
+}
+function avgSchedMg(dates,daysData) {
+  const vals=pastOnly(dates).map(d=>(daysData[d]?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0)).filter(x=>x>0);
+  return vals.length?(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2):null;
+}
+function totalPrnMg(dates,daysData) {
+  return pastOnly(dates).reduce((a,d)=>a+(daysData[d]?.clonazepam?.prn||[]).reduce((b,p)=>b+parseFloat(p.mg||0),0),0);
+}
+function episodeCount(dates,daysData) { return pastOnly(dates).filter(d=>daysData[d]?.episode).length; }
+
+// ─── SEED DATA ────────────────────────────────────────────────────────────────
+const SEED_DATA = {
+  "2026-02-17":{date:"2026-02-17",sleep:[],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[{id:1,time:"Morning",mg:"0.8"},{id:2,time:"Afternoon",mg:"0.8"},{id:3,time:"Night",mg:"0.8"}],prn:[{id:10,time:"Afternoon",mg:"0.5",cause:"GABA decompensation — meaning/identity/purpose collapse after fast taper (.2mg every 4 days). At 2.4mg."}]},
+    episode:null,meals:[],notes:"Meaning and purpose collapse. Suspected GABA decompensation triggered by fast taper. PRN 0.5mg restored baseline. Stabilized at 2.8mg/day."},
+  "2026-02-23":{date:"2026-02-23",sleep:[{id:1,from:"~11 PM",to:"3:00 AM",quality:"broken"}],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[{id:1,time:"Morning",mg:"0.9"},{id:2,time:"Afternoon",mg:"0.8"},{id:3,time:"Night",mg:"1.0"}],prn:[]},
+    episode:null,meals:[],notes:"Stable at 2.8mg. Circadian rhythm collapsed — bed at 3AM."},
+  "2026-02-24":{date:"2026-02-24",sleep:[{id:1,from:"3:00 AM",to:"5:00 AM",quality:"broken"},{id:2,from:"5:00 PM",to:"7:00 PM",quality:"ok"}],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]},{id:"innn-blood",label:"Blood tests at INNN",done:true,subtasks:[{label:"7:00 AM appointment",done:true}]},{id:"innn-cog",label:"Cognitive Assessment at INNN",done:true,subtasks:[{label:"10:00 AM — 2hrs",done:true}]}],
+    clonazepam:{doses:[{id:1,time:"Morning",mg:"0.9"},{id:2,time:"Afternoon",mg:"0.8"},{id:3,time:"Night",mg:"1.0"}],prn:[]},
+    episode:null,meals:[],notes:"2hrs heavy cognitive strain — function collapsing by hour 1. No PRN. Slept 5–7PM. Stable 2.8mg."},
+  "2026-02-25":{date:"2026-02-25",sleep:[{id:1,from:"1:00 AM",to:"10:00 AM",quality:"ok"}],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[{id:1,time:"Morning",mg:"0.9"},{id:2,time:"3:00 PM",mg:"0.8"},{id:3,time:"Night",mg:"1.0"}],prn:[{id:10,time:"5:00 PM",mg:"0.5",cause:"Autonomic episode — vitals spike after hyperactivation ramp-up"}]},
+    episode:{trigger:"Sensory overload",bp:"Elevated (not measured)",hr:"Elevated (not measured)",symptoms:["BP spike","HR spike","Sensory hypersensitivity"],resolved_by:"0.9mg normal + 0.5mg PRN clonazepam",duration:"~1hr ramp-up, resolved ~30min post-dose",notes:"Woke hyperactivated. Escalating all day. 3PM sensory hypersensitivity, dark room. 5PM full autonomic spike. Clonazepam gave stability not sedation. Insomnia all night.",time:"5:00 PM"},
+    meals:[],notes:"High energy on waking. Episode at 5PM controlled well."},
+  "2026-02-26":{date:"2026-02-26",sleep:[{id:1,from:"6:00 PM",to:"11:00 PM",quality:"ok"}],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[{id:1,time:"Morning",mg:"0.9"},{id:2,time:"Afternoon",mg:"0.8"},{id:3,time:"Night",mg:"1.0"}],prn:[]},
+    episode:null,meals:[],notes:"Fatigue. Deliberately avoided sleep to reset circadian rhythm. Held until 6PM, slept until 11PM."},
+  "2026-02-27":{date:"2026-02-27",sleep:[{id:1,from:"2:00 AM",to:"6:00 AM",quality:"broken"},{id:2,from:"4:00 PM",to:"7:00 PM",quality:"ok"}],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[{id:1,time:"Morning",mg:"0.9"},{id:2,time:"3:00 PM",mg:"0.8"},{id:3,time:"Night",mg:"1.0"}],prn:[]},
+    episode:null,meals:[],notes:"Woke 6AM good mood, energy. Afternoon dose caused sedation — nap 4–7PM. Insomnia after."},
+  "2026-02-28":{date:"2026-02-28",sleep:[{id:1,from:"6:00 AM",to:"2:00 PM",quality:"good"}],exercise:null,
+    tasks:[{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:true,subtasks:[{label:"Started health tracking project with Claude",done:true}]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[{id:1,time:"2:30 PM",mg:"0.9"},{id:2,time:"Evening",mg:"0.8"},{id:3,time:"Night",mg:"1.0"}],prn:[]},
+    episode:null,meals:[],notes:"8hrs sleep. Woke groggy but stable. Started tracking project."},
+  "2026-03-03":{date:"2026-03-03",sleep:[],exercise:null,
+    tasks:[{id:"innn-consult",label:"INNN Psychiatry Consult",done:false,subtasks:[{label:"8:30 AM appointment",done:false},{label:"Blood test results",done:false},{label:"Cognitive assessment results",done:false},{label:"Discuss taper plan",done:false}]},{id:"reading",label:"Reading + Music",done:false,subtasks:[]},{id:"project",label:"GoFundMe / Peer Support",done:false,subtasks:[]},{id:"piano",label:"Piano",done:false,subtasks:[]}],
+    clonazepam:{doses:[],prn:[]},episode:null,meals:[],notes:"INNN consult — blood tests and cognitive assessment results. Committee prescription decision."},
+};
+
+// ─── APP ──────────────────────────────────────────────────────────────────────
+
+
+function Tracker() {
+  const [days, setDays]             = useState({});
+  const [activeDate, setActiveDate] = useState(todayStr());
+  const [view, setView]             = useState("day");
+  const [loaded, setLoaded]         = useState(false);
+  const [saving, setSaving]         = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [printDate, setPrintDate]   = useState(todayStr());
+
+  // Keep printDate in sync for day view
+  useEffect(()=>{ if(view==="day") setPrintDate(activeDate); },[view,activeDate]);
+
+  useEffect(()=>{
+    (async()=>{
+      try {
+        const res=await fetch(SUPABASE_URL+"/rest/v1/health_log?id=eq.munir&select=data",{
+          headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY}
+        });
+        if(res.ok){
+          const rows=await res.json();
+          if(rows.length>0&&rows[0].data&&Object.keys(rows[0].data).length>0){
+            const stored=rows[0].data;
+            const merged={...SEED_DATA};
+            Object.keys(stored).forEach(date=>{merged[date]=stored[date];});
+            setDays(merged);
+          } else { setDays(SEED_DATA); }
+        } else { setDays(SEED_DATA); }
+      } catch(_){setDays(SEED_DATA);}
+      setLoaded(true);
+    })();
+  },[]);
+
+  useEffect(()=>{
+    if(!loaded)return;
+    setSaving(true);
+    const t=setTimeout(async()=>{
+      try{
+        await fetch(SUPABASE_URL+"/rest/v1/health_log?id=eq.munir",{
+          method:"PATCH",
+          headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY,"Content-Type":"application/json","Prefer":"return=minimal"},
+          body:JSON.stringify({data:days,updated_at:new Date().toISOString()})
+        });
+      }catch(_){}
+      setSaving(false);
+    },1500);
+    return()=>clearTimeout(t);
+  },[days,loaded]);
+
+  const getDay=(date)=>days[date]||emptyDay(date);
+  const setDay=(date,upd)=>setDays(prev=>{
+    const d=prev[date]||emptyDay(date);
+    return{...prev,[date]:typeof upd==="function"?upd(d):upd};
+  });
+
+  // Week containing activeDate, Mon→Sun
+  const getWeekDates=(anchor)=>{
+    const dt=localDate(anchor);
+    const dow=dt.getDay(); // 0=Sun
+    const monday=addDays(anchor, dow===0?-6:1-dow);
+    return Array.from({length:7},(_,i)=>addDays(monday,i));
+  };
+
+  const stripDates=(()=>{const arr=[];for(let i=-3;i<=3;i++)arr.push(addDays(activeDate,i));return arr;})();
+  const isFuture=(d)=>d>todayStr();
+
+  if(!loaded)return(
+    <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:C.textFaint,fontFamily:"monospace",fontSize:"11px",letterSpacing:"4px"}}>LOADING</div>
+  );
+
+  const ViewTabs=()=>(
+    <div style={{display:"flex",gap:"4px",alignItems:"center"}}>
+      {saving&&<span style={{fontSize:"9px",color:C.textFaint,letterSpacing:"3px",marginRight:"4px"}}>SAVING</span>}
+      {["day","week","month"].map(v=>(
+        <button key={v} onClick={()=>setView(v)} style={{background:view===v?C.bgInset:"transparent",border:`1px solid ${view===v?C.border:"transparent"}`,color:view===v?C.text:C.textMid,padding:"5px 11px",borderRadius:"4px",cursor:"pointer",fontSize:"10px",letterSpacing:"2px",fontFamily:"monospace"}}>
+          {v.toUpperCase()}
+        </button>
+      ))}
+      <button onClick={()=>{setActiveDate(todayStr());setView("day");}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.blue,padding:"5px 11px",borderRadius:"4px",cursor:"pointer",fontSize:"10px",letterSpacing:"2px",fontFamily:"monospace"}}>
+        TODAY
+      </button>
+      <button onClick={()=>printReport(view,printDate,days,getWeekDates)} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.textMid,padding:"5px 11px",borderRadius:"4px",cursor:"pointer",fontSize:"10px",letterSpacing:"2px",fontFamily:"monospace"}}>
+        PRINT
+      </button>
+      <button onClick={()=>exportData(days)} style={{background:"transparent",border:`1px solid ${C.green}`,color:C.green,padding:"5px 11px",borderRadius:"4px",cursor:"pointer",fontSize:"10px",letterSpacing:"2px",fontFamily:"monospace"}}>
+        EXPORT
+      </button>
+      <label style={{background:"transparent",border:`1px solid ${C.border}`,color:C.textMid,padding:"5px 11px",borderRadius:"4px",cursor:"pointer",fontSize:"10px",letterSpacing:"2px",fontFamily:"monospace"}}>
+        IMPORT
+        <input type="file" accept=".json" style={{display:"none"}} onChange={e=>importData(e,setDays,setSaving)}/>
+      </label>
+    </div>
+  );
+
+  return(
+    <div style={{background:C.bg,minHeight:"100vh",color:C.text,fontFamily:"Georgia,serif"}}>
+      {/* Header */}
+      <div style={{borderBottom:`1px solid ${C.border}`,padding:"14px 22px 11px",display:"flex",justifyContent:"space-between",alignItems:"center",background:C.bgCard}}>
+        <div>
+          <div style={{fontSize:"9px",letterSpacing:"4px",color:C.textFaint,marginBottom:"3px"}}>MUNIR · HEALTH LOG</div>
+          <button onClick={()=>setShowDatePicker(s=>!s)} style={{background:"none",border:"none",cursor:"pointer",padding:0,color:C.textSec,fontSize:"16px",fontFamily:"Georgia,serif"}}>
+            {fmt(activeDate)} <span style={{fontSize:"11px",color:C.textFaint}}>▾</span>
+          </button>
+        </div>
+        <ViewTabs/>
+      </div>
+
+      {showDatePicker&&(
+        <div style={{padding:"10px 22px",borderBottom:`1px solid ${C.border}`,background:C.bgCard}}>
+          <input type="date" value={activeDate} onChange={e=>{setActiveDate(e.target.value);setShowDatePicker(false);}}
+            style={{background:C.bgInset,border:`1px solid ${C.border}`,color:C.text,padding:"6px 10px",borderRadius:"4px",fontSize:"13px",fontFamily:"monospace"}}/>
+          <span style={{fontSize:"11px",color:C.textFaint,marginLeft:"10px"}}>Jump to any date</span>
+        </div>
+      )}
+
+      {/* Day strip — day + week views */}
+      {view!=="month"&&(
+        <div style={{display:"flex",gap:"3px",padding:"7px 22px",borderBottom:`1px solid ${C.border}`,overflowX:"auto",alignItems:"center",background:C.bgCard}}>
+          <button onClick={()=>setActiveDate(addDays(activeDate,-7))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"16px",padding:"4px 6px",flexShrink:0}}>‹</button>
+          {stripDates.map(d=>{
+            const isToday=d===todayStr(),isActive=d===activeDate,future=isFuture(d),hasEp=days[d]?.episode;
+            return(
+              <button key={d} onClick={()=>{setActiveDate(d);setView("day");}} style={{background:isActive?C.bgInset:"transparent",border:`1px solid ${isActive?C.border:"transparent"}`,borderRadius:"5px",padding:"5px 7px",cursor:"pointer",minWidth:"42px",flexShrink:0,opacity:future?0.45:1}}>
+                <div style={{fontSize:"9px",color:isToday?C.today:C.textFaint,letterSpacing:"1px",textAlign:"center"}}>
+                  {localDate(d).toLocaleDateString("en-US",{weekday:"short"}).toUpperCase()}
+                </div>
+                <div style={{fontSize:"14px",color:isActive?C.text:C.textMid,textAlign:"center",margin:"2px 0"}}>{localDate(d).getDate()}</div>
+                <div style={{textAlign:"center",fontSize:"10px"}}>
+                  {hasEp?<span style={{color:C.red,fontSize:"16px",lineHeight:"1",display:"block"}}>⚡</span>:days[d]?.sleep?.length?<span style={{color:C.blue}}>·</span>:<span style={{color:C.bgInset}}>·</span>}
+                </div>
+              </button>
+            );
+          })}
+          <button onClick={()=>setActiveDate(addDays(activeDate,7))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"16px",padding:"4px 6px",flexShrink:0}}>›</button>
+        </div>
+      )}
+
+      {view==="month"
+        ?<MonthView days={days} activeDate={activeDate} setActiveDate={d=>{setActiveDate(d);setView("day");}} getWeekDates={getWeekDates} onMonthChange={setPrintDate}/>
+        :view==="week"
+        ?<WeekView days={days} activeDate={activeDate} setActiveDate={d=>{setActiveDate(d);setView("day");}} getWeekDates={getWeekDates} onWeekChange={setPrintDate}/>
+        :<DayView day={getDay(activeDate)} upd={fn=>setDay(activeDate,fn)} activeDate={activeDate} isFuture={isFuture(activeDate)}/>
+      }
+    </div>
+  );
+}
+
+// ─── SHARED STYLE HELPERS ─────────────────────────────────────────────────────
+const iStyle=(extra={})=>({background:"#cdc5b4",border:`1px solid ${C.border}`,color:C.text,padding:"6px 9px",borderRadius:"4px",fontSize:"12px",fontFamily:"Georgia,serif",...extra});
+const aBtn=(extra={})=>({background:C.bgCard,border:`1px solid ${C.border}`,color:C.textSec,padding:"6px 12px",borderRadius:"4px",cursor:"pointer",fontSize:"11px",fontFamily:"monospace",...extra});
+const sec={marginBottom:"22px"};
+const SL=({children,sub})=>(
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:"9px"}}>
+    <div style={{fontSize:"9px",letterSpacing:"3px",color:C.textMid,textTransform:"uppercase"}}>{children}</div>
+    {sub&&<div style={{fontSize:"10px",color:C.textSec,fontFamily:"monospace"}}>{sub}</div>}
+  </div>
+);
+const Card=({children,style={}})=>(
+  <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:"7px",padding:"13px 15px",...style}}>{children}</div>
+);
+
+function Delta({curr,prior,higherIsBetter=true,fmt:f}){
+  if(curr===null||curr===undefined||prior===null||prior===undefined)return null;
+  const diff=curr-prior; if(diff===0)return null;
+  const good=higherIsBetter?diff>0:diff<0;
+  const label=f?f(Math.abs(diff)):String(Math.abs(diff));
+  return <span style={{fontSize:"9px",color:good?C.green:C.red,marginLeft:"5px",fontFamily:"monospace"}}>{diff>0?"+":"-"}{label} vs prior</span>;
+}
+
+function BarChart({data,maxVal,colorFn,labelFn,height=60,dotFn,onClickDate}){
+  const W=Math.max(data.length*28,280);
+  return(
+    <div style={{overflowX:"auto",paddingBottom:"4px"}}>
+      <div style={{display:"flex",alignItems:"flex-end",gap:"2px",height:height+"px",minWidth:W+"px"}}>
+        {data.map((item,i)=>{
+          const pct=maxVal>0?Math.min(100,item.val/maxVal*100):0;
+          const col=colorFn(item);
+          const dot=dotFn?dotFn(item):null;
+          return(
+            <div key={i} onClick={()=>onClickDate&&onClickDate(item.date)} style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center",cursor:"pointer",minWidth:"24px",position:"relative",height:"100%"}}>
+              {dot&&<div style={{width:"6px",height:"6px",borderRadius:"50%",background:dot,position:"absolute",top:0,zIndex:1}}/>}
+              <div style={{width:"80%",background:item.val>0?col:C.bgInset,borderRadius:"2px 2px 0 0",height:`${pct}%`,minHeight:item.val>0?"2px":"0"}}/>
+              {item.val>0&&<div style={{fontSize:"8px",color:col,fontFamily:"monospace",marginTop:"1px",textAlign:"center",lineHeight:1}}>{labelFn(item)}</div>}
+              <div style={{fontSize:"8px",color:C.textFaint,fontFamily:"monospace",textAlign:"center"}}>{parseInt(item.date.split("-")[2],10)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── DONUT CHART ──────────────────────────────────────────────────────────────
+function DonutChart({data,size=80,title}) {
+  // data: [{label,count,color}]
+  const total=data.reduce((a,d)=>a+d.count,0);
+  if(!total)return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"4px"}}>
+      <div style={{width:size,height:size,borderRadius:"50%",border:`${size*0.12}px solid ${C.bgInset}`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <span style={{fontSize:"10px",color:C.textFaint}}>—</span>
+      </div>
+      {title&&<div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",textAlign:"center"}}>{title}</div>}
+    </div>
+  );
+  const r=size/2, stroke=size*0.18, inner=r-stroke/2;
+  const activeSlices=data.filter(d=>d.count>0);
+  let cumAngle=-Math.PI/2;
+  const slices=activeSlices.map(d=>{
+    const angle=activeSlices.length===1?(2*Math.PI-0.001):(d.count/total)*2*Math.PI;
+    const x1=r+inner*Math.cos(cumAngle), y1=r+inner*Math.sin(cumAngle);
+    cumAngle+=angle;
+    const x2=r+inner*Math.cos(cumAngle), y2=r+inner*Math.sin(cumAngle);
+    const large=angle>Math.PI?1:0;
+    return {...d,path:`M ${r} ${r} L ${x1} ${y1} A ${inner} ${inner} 0 ${large} 1 ${x2} ${y2} Z`,angle};
+  });
+  return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"6px"}}>
+      <div style={{position:"relative",width:size,height:size}}>
+        <svg width={size} height={size}>
+          {slices.map((s,i)=><path key={i} d={s.path} fill={s.color} stroke={C.bg} strokeWidth="1"/>)}
+          <circle cx={r} cy={r} r={inner-stroke/2} fill={C.bg}/>
+        </svg>
+        <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",textAlign:"center"}}>
+          <div style={{fontSize:size*0.18+"px",fontFamily:"monospace",color:C.text,fontWeight:"bold",lineHeight:1}}>{total}</div>
+        </div>
+      </div>
+      {title&&<div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",textAlign:"center"}}>{title}</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:"2px",width:"100%"}}>
+        {data.filter(d=>d.count>0).map((d,i)=>(
+          <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"6px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:"4px"}}>
+              <div style={{width:"8px",height:"8px",borderRadius:"2px",background:d.color,flexShrink:0}}/>
+              <span style={{fontSize:"10px",color:C.textSec}}>{d.label}</span>
+            </div>
+            <span style={{fontSize:"10px",fontFamily:"monospace",color:C.textSec,flexShrink:0}}>{d.count}×</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── DAY VIEW ─────────────────────────────────────────────────────────────────
+function DayView({day,upd,activeDate,isFuture}){
+  return(
+    <div style={{padding:"20px 22px",maxWidth:"680px",margin:"0 auto"}}>
+      {isFuture&&<div style={{fontSize:"10px",color:C.blue,letterSpacing:"2px",marginBottom:"16px"}}>UPCOMING</div>}
+      <SleepSection day={day} upd={upd}/>
+      {!isFuture&&<EpisodeSection day={day} upd={upd}/>}
+      <ClonazepamSection day={day} upd={upd}/>
+      <ExerciseSection day={day} upd={upd}/>
+      <TaskSection day={day} upd={upd} activeDate={activeDate}/>
+      {!isFuture&&<MealSection day={day} upd={upd}/>}
+      <NotesSection day={day} upd={upd}/>
+    </div>
+  );
+}
+
+// ─── SLEEP SECTION ────────────────────────────────────────────────────────────
+function SleepSection({day,upd}){
+  const [nb,setNb]=useState({from:"",to:"",quality:"ok"});
+  const sleep=day.sleep||[];
+  const totalMins=totalSleepMinutes(sleep);
+  const addBlock=()=>{
+    if(!nb.from||!nb.to)return;
+    upd(d=>({...d,sleep:[...d.sleep,{id:Date.now(),...nb}]}));
+    setNb({from:"",to:"",quality:"ok"});
+  };
+  return(
+    <div style={sec}>
+      <SL sub={totalMins!==null?fmtHours(totalMins):null}>Sleep</SL>
+      {sleep.length>0&&(
+        <Card style={{marginBottom:"8px"}}>
+          {sleep.map(s=>{
+            const m=calcSleepMinutes(s.from,s.to);
+            return(
+              <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"5px",padding:"5px 8px",background:C.bgInset,borderRadius:"4px"}}>
+                <span style={{fontFamily:"monospace",color:C.textSec,fontSize:"12px"}}>{s.from} → {s.to}{m!==null?<span style={{color:sleepQualityColor(m),marginLeft:"6px"}}>{fmtHours(m)}</span>:null}</span>
+                <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+                  <select value={s.quality} onChange={e=>upd(d=>({...d,sleep:d.sleep.map(x=>x.id===s.id?{...x,quality:e.target.value}:x)}))}
+                    style={{...iStyle({padding:"2px 5px",fontSize:"11px"}),background:C.bgInset}}>
+                    <option value="good">Good</option><option value="ok">OK</option><option value="broken">Broken</option>
+                  </select>
+                  <button onClick={()=>upd(d=>({...d,sleep:d.sleep.filter(x=>x.id!==s.id)}))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"14px"}}>×</button>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+      <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
+        <input placeholder="From  e.g. 10:00 PM" value={nb.from} onChange={e=>setNb(p=>({...p,from:e.target.value}))} style={iStyle({width:"130px"})}/>
+        <input placeholder="To  e.g. 6:00 AM"   value={nb.to}   onChange={e=>setNb(p=>({...p,to:e.target.value}))}   style={iStyle({width:"120px"})}/>
+        <select value={nb.quality} onChange={e=>setNb(p=>({...p,quality:e.target.value}))} style={iStyle({width:"90px"})}>
+          <option value="good">Good</option><option value="ok">OK</option><option value="broken">Broken</option>
+        </select>
+        <button onClick={addBlock} style={aBtn()}>+ Add</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── EPISODE SECTION ──────────────────────────────────────────────────────────
+function EpisodeSection({day,upd}){
+  const [form,setForm]=useState({trigger:"",bp:"",hr:"",symptoms:[],resolved_by:"",duration:"",notes:"",time:""});
+  const [open,setOpen]=useState(false);
+  const tSym=s=>setForm(p=>({...p,symptoms:p.symptoms.includes(s)?p.symptoms.filter(x=>x!==s):[...p.symptoms,s]}));
+  const save=()=>{upd(d=>({...d,episode:{...form,time:form.time||new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}}));setOpen(false);};
+  return(
+    <div style={sec}>
+      <SL>Autonomic Episode</SL>
+      {day.episode?(
+        <Card style={{background:C.bgEp,borderColor:C.borderEp}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:"7px"}}>
+            <span style={{color:C.red,fontSize:"14px",fontWeight:"bold"}}>⚡ EPISODE · {day.episode.time}</span>
+            <button onClick={()=>upd(d=>({...d,episode:null}))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"11px"}}>remove</button>
+          </div>
+          {day.episode.trigger&&<div style={{fontSize:"12px",color:C.textSec,marginBottom:"3px"}}>Trigger: {day.episode.trigger}</div>}
+          {(day.episode.bp||day.episode.hr)&&<div style={{fontFamily:"monospace",fontSize:"12px",color:C.red,marginBottom:"3px"}}>{day.episode.bp&&`BP ${day.episode.bp}`}{day.episode.bp&&day.episode.hr&&" · "}{day.episode.hr&&`HR ${day.episode.hr} bpm`}</div>}
+          {day.episode.duration&&<div style={{fontSize:"11px",color:C.textSec,marginBottom:"3px"}}>Duration: {day.episode.duration}</div>}
+          {day.episode.symptoms?.length>0&&<div style={{fontSize:"11px",color:C.textSec,marginBottom:"3px"}}>Symptoms: {day.episode.symptoms.join(", ")}</div>}
+          {day.episode.resolved_by&&<div style={{fontSize:"11px",color:C.green}}>Resolved by: {day.episode.resolved_by}</div>}
+          {day.episode.notes&&<div style={{fontSize:"12px",color:C.textSec,marginTop:"6px",fontStyle:"italic",lineHeight:"1.5"}}>{day.episode.notes}</div>}
+        </Card>
+      ):open?(
+        <Card style={{background:C.bgEp,borderColor:C.borderEp}}>
+          <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+            <div style={{display:"flex",gap:"8px"}}>
+              <input placeholder="Time" value={form.time} onChange={e=>setForm(p=>({...p,time:e.target.value}))} style={iStyle({width:"90px"})}/>
+              <select value={form.trigger} onChange={e=>setForm(p=>({...p,trigger:e.target.value}))} style={iStyle({flex:1})}>
+                <option value="">Trigger...</option>
+                {AUTONOMIC_TRIGGERS.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={{display:"flex",gap:"8px"}}>
+              <input placeholder="BP e.g. 155/110" value={form.bp} onChange={e=>setForm(p=>({...p,bp:e.target.value}))} style={iStyle({width:"130px"})}/>
+              <input placeholder="HR bpm" value={form.hr} onChange={e=>setForm(p=>({...p,hr:e.target.value}))} style={iStyle({width:"90px"})}/>
+              <input placeholder="Duration" value={form.duration} onChange={e=>setForm(p=>({...p,duration:e.target.value}))} style={iStyle({flex:1})}/>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:"5px"}}>
+              {EPISODE_SYMPTOMS.map(s=>(
+                <button key={s} onClick={()=>tSym(s)} style={{...aBtn(),background:form.symptoms.includes(s)?C.bgEp:C.bgInset,borderColor:form.symptoms.includes(s)?C.borderEp:C.border,color:form.symptoms.includes(s)?C.red:C.textSec,fontSize:"10px",padding:"4px 9px"}}>{s}</button>
+              ))}
+            </div>
+            <input placeholder="Resolved by..." value={form.resolved_by} onChange={e=>setForm(p=>({...p,resolved_by:e.target.value}))} style={iStyle({width:"100%"})}/>
+            <textarea placeholder="Notes..." value={form.notes} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} style={{...iStyle({width:"100%",resize:"vertical",minHeight:"60px"}),boxSizing:"border-box"}}/>
+            <div style={{display:"flex",gap:"8px"}}>
+              <button onClick={save} style={{...aBtn(),background:C.bgEp,borderColor:C.borderEp,color:C.red}}>Save episode</button>
+              <button onClick={()=>setOpen(false)} style={{...aBtn(),background:"transparent"}}>Cancel</button>
+            </div>
+          </div>
+        </Card>
+      ):(
+        <button onClick={()=>setOpen(true)} style={{...aBtn(),borderStyle:"dashed",color:C.red,borderColor:C.borderEp,background:"transparent"}}>+ Log autonomic episode</button>
+      )}
+    </div>
+  );
+}
+
+// ─── CLONAZEPAM ───────────────────────────────────────────────────────────────
+function ClonazepamSection({day,upd}){
+  const [nd,setNd]=useState({time:"",mg:""});
+  const [np,setNp]=useState({time:"",mg:"",cause:""});
+  const [showPrn,setShowPrn]=useState(false);
+  const clona=day.clonazepam||{doses:[],prn:[]};
+  const scheduled=clona.doses||[], prn=clona.prn||[];
+  const totalSch=scheduled.reduce((a,d)=>a+parseFloat(d.mg||0),0);
+  const totalPrnDay=prn.reduce((a,d)=>a+parseFloat(d.mg||0),0);
+  const totalDay=+(totalSch+totalPrnDay).toFixed(2);
+  const addDose=()=>{if(!nd.mg)return;upd(d=>({...d,clonazepam:{...d.clonazepam,doses:[...(d.clonazepam?.doses||[]),{...nd,id:Date.now()}]}}));setNd({time:"",mg:""});};
+  const addPrn=()=>{if(!np.mg)return;upd(d=>({...d,clonazepam:{...d.clonazepam,prn:[...(d.clonazepam?.prn||[]),{...np,id:Date.now()}]}}));setNp({time:"",mg:"",cause:""});setShowPrn(false);};
+  return(
+    <div style={sec}>
+      <SL sub={totalDay>0?`${totalDay}mg total`:null}>Clonazepam</SL>
+      <Card>
+        <div style={{marginBottom:"12px"}}>
+          <div style={{fontSize:"9px",letterSpacing:"2px",color:C.textFaint,marginBottom:"7px"}}>SCHEDULED</div>
+          {scheduled.length===0&&<div style={{color:C.textFaint,fontSize:"12px",marginBottom:"7px"}}>None logged</div>}
+          {scheduled.map(d=>(
+            <div key={d.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px",padding:"5px 9px",background:C.bgInset,borderRadius:"4px"}}>
+              <span style={{fontFamily:"monospace",color:C.blue,fontSize:"12px"}}>{d.time||"—"}</span>
+              <div style={{display:"flex",gap:"9px",alignItems:"center"}}>
+                <span style={{fontFamily:"monospace",color:C.blueLight,fontSize:"14px"}}>{d.mg}mg</span>
+                <button onClick={()=>upd(d2=>({...d2,clonazepam:{...d2.clonazepam,doses:d2.clonazepam.doses.filter(x=>x.id!==d.id)}}))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"14px"}}>×</button>
+              </div>
+            </div>
+          ))}
+          <div style={{display:"flex",gap:"6px",marginTop:"5px"}}>
+            <input placeholder="Time  e.g. 9:00 AM" value={nd.time} onChange={e=>setNd(p=>({...p,time:e.target.value}))} style={iStyle({width:"130px"})}/>
+            <input placeholder="mg  e.g. 0.9" value={nd.mg} onChange={e=>setNd(p=>({...p,mg:e.target.value}))} style={iStyle({width:"75px"})}/>
+            <button onClick={addDose} style={aBtn()}>+ Add</button>
+          </div>
+        </div>
+        {/* PRN — alert treatment */}
+        <div style={{borderTop:`2px solid ${C.borderPrn}`,paddingTop:"11px",background:prn.length>0?C.bgPrn:"transparent",margin:prn.length>0?"-1px -1px -1px -1px":0,borderRadius:prn.length>0?"0 0 6px 6px":"0",padding:prn.length>0?"11px 14px":"11px 0 0 0"}}>
+          <div style={{fontSize:"10px",letterSpacing:"2px",color:C.orange,marginBottom:"7px",fontWeight:"bold"}}>⚠ PRN</div>
+          {prn.length===0&&!showPrn&&<div style={{color:C.textFaint,fontSize:"12px",marginBottom:"7px"}}>None today</div>}
+          {prn.map(p=>(
+            <div key={p.id} style={{marginBottom:"5px",padding:"7px 10px",background:C.bgPrn,borderRadius:"5px",border:`1px solid ${C.borderPrn}`}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <span style={{fontFamily:"monospace",color:C.orange,fontSize:"14px",fontWeight:"bold"}}>{p.time||"—"} · {p.mg}mg</span>
+                <button onClick={()=>upd(d=>({...d,clonazepam:{...d.clonazepam,prn:d.clonazepam.prn.filter(x=>x.id!==p.id)}}))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"13px"}}>×</button>
+              </div>
+              {p.cause&&<div style={{fontSize:"11px",color:C.textSec,marginTop:"2px"}}>{p.cause}</div>}
+            </div>
+          ))}
+          {showPrn?(
+            <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+              <input placeholder="Time" value={np.time} onChange={e=>setNp(p=>({...p,time:e.target.value}))} style={iStyle({width:"95px"})}/>
+              <input placeholder="mg" value={np.mg} onChange={e=>setNp(p=>({...p,mg:e.target.value}))} style={iStyle({width:"65px"})}/>
+              <input placeholder="Cause / reason" value={np.cause} onChange={e=>setNp(p=>({...p,cause:e.target.value}))} style={iStyle({flex:1,minWidth:"150px"})}/>
+              <button onClick={addPrn} style={aBtn()}>Add</button>
+              <button onClick={()=>setShowPrn(false)} style={{...aBtn(),background:"transparent"}}>Cancel</button>
+            </div>
+          ):(
+            <button onClick={()=>setShowPrn(true)} style={{...aBtn(),borderStyle:"dashed",color:C.orange,borderColor:C.borderPrn,background:"transparent"}}>+ Log PRN dose</button>
+          )}
+        </div>
+        {totalDay>0&&(
+          <div style={{borderTop:`1px solid ${C.border}`,paddingTop:"10px",marginTop:"9px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px"}}>DAILY TOTAL</span>
+            <span style={{fontFamily:"monospace",fontSize:"16px",color:totalDay>3.5?C.red:C.blue,fontWeight:"bold"}}>{totalDay}mg</span>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ─── EXERCISE ─────────────────────────────────────────────────────────────────
+function ExerciseSection({day,upd}){
+  const [customMode,setCustomMode]=useState(false);
+  const [cLabel,setCLabel]=useState("");const [cSubs,setCSubs]=useState("");
+  const ex=day.exercise;
+  const allDone=ex?.subtasks?.length>0&&ex.subtasks.every(s=>s.done);
+  const setPreset=p=>upd(d=>({...d,exercise:{...p,subtasks:p.subtasks.map(s=>({label:s,done:false}))}}));
+  const toggleSub=i=>upd(d=>({...d,exercise:{...d.exercise,subtasks:d.exercise.subtasks.map((s,si)=>si===i?{...s,done:!s.done}:s)}}));
+  const addCustom=()=>{if(!cLabel.trim())return;upd(d=>({...d,exercise:{label:cLabel.trim(),subtasks:cSubs.split(",").map(s=>s.trim()).filter(Boolean).map(s=>({label:s,done:false}))}}));setCLabel("");setCSubs("");setCustomMode(false);};
+  return(
+    <div style={sec}>
+      <SL>Exercise</SL>
+      {!ex?(
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {EXERCISE_PRESETS.map(p=><button key={p.id} onClick={()=>setPreset(p)} style={{...aBtn(),borderStyle:"dashed"}}>{p.label}</button>)}
+          <button onClick={()=>upd(d=>({...d,exercise:{label:"Rest day",subtasks:[]}}))} style={{...aBtn(),borderStyle:"dashed",color:C.textFaint,background:"transparent"}}>Rest day</button>
+          {!customMode
+            ?<button onClick={()=>setCustomMode(true)} style={{...aBtn(),borderStyle:"dashed",color:C.textFaint,background:"transparent"}}>+ Custom</button>
+            :<div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center",width:"100%"}}>
+              <input placeholder="Activity" value={cLabel} onChange={e=>setCLabel(e.target.value)} style={iStyle({width:"130px"})}/>
+              <input placeholder="Subtasks (comma sep.)" value={cSubs} onChange={e=>setCSubs(e.target.value)} style={iStyle({flex:1,minWidth:"160px"})}/>
+              <button onClick={addCustom} style={aBtn()}>Add</button>
+              <button onClick={()=>setCustomMode(false)} style={{...aBtn(),background:"transparent"}}>Cancel</button>
+            </div>}
+        </div>
+      ):(
+        <Card style={{borderColor:allDone?C.borderDone:C.border,background:allDone?C.bgDone:C.bgCard}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
+            <span style={{color:allDone?C.green:C.textSec,fontSize:"13px"}}>{ex.label}</span>
+            <button onClick={()=>upd(d=>({...d,exercise:null}))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"11px"}}>change</button>
+          </div>
+          {ex.subtasks.map((st,i)=>(
+            <button key={i} onClick={()=>toggleSub(i)} style={{display:"flex",alignItems:"center",gap:"9px",background:"none",border:"none",cursor:"pointer",padding:"4px 0",width:"100%"}}>
+              <div style={{width:"15px",height:"15px",border:`2px solid ${st.done?C.green:C.border}`,borderRadius:"3px",background:st.done?C.bgDone:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                {st.done&&<span style={{color:C.green,fontSize:"9px"}}>✓</span>}
+              </div>
+              <span style={{color:st.done?C.green:C.textSec,fontSize:"13px"}}>{st.label}</span>
+            </button>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── TASKS ────────────────────────────────────────────────────────────────────
+function TaskSection({day,upd,activeDate}){
+  const [newTask,setNewTask]=useState("");const [newSub,setNewSub]=useState({});const [expanded,setExpanded]=useState(null);
+  const tasks=day.tasks||[];
+  useEffect(()=>{if(tasks.length===0)upd(d=>({...d,tasks:DEFAULT_TASKS.map(t=>({...t,done:false,subtasks:[]}))}));},[]);
+  const toggleTask=id=>upd(d=>({...d,tasks:d.tasks.map(t=>t.id===id?{...t,done:!t.done}:t)}));
+  const removeTask=id=>upd(d=>({...d,tasks:d.tasks.filter(t=>t.id!==id)}));
+  const addTask=()=>{if(!newTask.trim())return;upd(d=>({...d,tasks:[...(d.tasks||[]),{id:`t-${Date.now()}`,label:newTask.trim(),done:false,subtasks:[]}]}));setNewTask("");};
+  const toggleSub=(tid,si)=>upd(d=>({...d,tasks:d.tasks.map(t=>t.id!==tid?t:{...t,subtasks:t.subtasks.map((s,i)=>i===si?{...s,done:!s.done}:s)})}));
+  const addSub=tid=>{const text=newSub[tid]?.trim();if(!text)return;upd(d=>({...d,tasks:d.tasks.map(t=>t.id!==tid?t:{...t,subtasks:[...(t.subtasks||[]),{label:text,done:false}]})}));setNewSub(p=>({...p,[tid]:""}));};
+  const removeSub=(tid,si)=>upd(d=>({...d,tasks:d.tasks.map(t=>t.id!==tid?t:{...t,subtasks:t.subtasks.filter((_,i)=>i!==si)})}));
+  return(
+    <div style={sec}>
+      <SL>Recovery Tasks</SL>
+      <div style={{display:"flex",flexDirection:"column",gap:"5px"}}>
+        {tasks.map(t=>{
+          const hasSubs=t.subtasks?.length>0,subsDone=hasSubs?t.subtasks.filter(s=>s.done).length:0,isExp=expanded===t.id;
+          return(
+            <div key={t.id} style={{background:t.done?C.bgDone:C.bgCard,border:`1px solid ${t.done?C.borderDone:C.border}`,borderRadius:"7px",overflow:"hidden"}}>
+              <div style={{display:"flex",alignItems:"center"}}>
+                <button onClick={()=>toggleTask(t.id)} style={{flex:1,background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:"11px",padding:"10px 13px",textAlign:"left"}}>
+                  <div style={{width:"16px",height:"16px",border:`2px solid ${t.done?C.green:C.border}`,borderRadius:"3px",background:t.done?C.bgDone:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    {t.done&&<span style={{color:C.green,fontSize:"9px"}}>✓</span>}
+                  </div>
+                  <span style={{color:t.done?C.green:C.textSec,fontSize:"13px"}}>{t.label}</span>
+                  {hasSubs&&<span style={{fontSize:"10px",color:C.textFaint,marginLeft:"auto"}}>{subsDone}/{t.subtasks.length}</span>}
+                </button>
+                <button onClick={()=>setExpanded(isExp?null:t.id)} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"12px",padding:"0 10px"}}>{isExp?"▲":"▼"}</button>
+                <button onClick={()=>removeTask(t.id)} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"15px",padding:"0 10px"}}>×</button>
+              </div>
+              {isExp&&(
+                <div style={{borderTop:`1px solid ${C.border}`,padding:"8px 13px 10px 38px"}}>
+                  {(t.subtasks||[]).map((s,si)=>(
+                    <div key={si} style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"5px"}}>
+                      <button onClick={()=>toggleSub(t.id,si)} style={{display:"flex",alignItems:"center",gap:"8px",background:"none",border:"none",cursor:"pointer",flex:1,padding:"3px 0",textAlign:"left"}}>
+                        <div style={{width:"13px",height:"13px",border:`2px solid ${s.done?C.green:C.border}`,borderRadius:"2px",background:s.done?C.bgDone:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                          {s.done&&<span style={{color:C.green,fontSize:"8px"}}>✓</span>}
+                        </div>
+                        <span style={{color:s.done?C.green:C.textSec,fontSize:"12px"}}>{s.label}</span>
+                      </button>
+                      <button onClick={()=>removeSub(t.id,si)} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"13px"}}>×</button>
+                    </div>
+                  ))}
+                  <div style={{display:"flex",gap:"6px",marginTop:"6px"}}>
+                    <input placeholder="Add subtask..." value={newSub[t.id]||""} onChange={e=>setNewSub(p=>({...p,[t.id]:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&addSub(t.id)} style={iStyle({flex:1})}/>
+                    <button onClick={()=>addSub(t.id)} style={aBtn()}>+ Add</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div style={{display:"flex",gap:"6px",marginTop:"3px"}}>
+          <input placeholder="Add task..." value={newTask} onChange={e=>setNewTask(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTask()} style={iStyle({flex:1})}/>
+          <button onClick={addTask} style={aBtn()}>+ Add</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MEALS ────────────────────────────────────────────────────────────────────
+function MealSection({day,upd}){
+  const [newMeal,setNewMeal]=useState("");
+  const meals=day.meals||[];const dayScore=scoreDayMeals(meals);
+  const addMeal=()=>{if(!newMeal.trim())return;const s=scoreMealItem(newMeal.trim());upd(d=>({...d,meals:[...(d.meals||[]),{id:Date.now(),description:newMeal.trim(),...s}]}));setNewMeal("");};
+  return(
+    <div style={sec}>
+      <SL sub={dayScore?`Day score: ${dayScore.score}/10`:null}>Meals</SL>
+      {meals.length>0&&(
+        <Card style={{marginBottom:"8px"}}>
+          {dayScore?.flags?.length>0&&<div style={{marginBottom:"8px",display:"flex",flexWrap:"wrap",gap:"5px"}}>{dayScore.flags.map((f,i)=><span key={i} style={{fontSize:"10px",color:C.orange,background:C.bgPrn,padding:"2px 7px",borderRadius:"3px",border:`1px solid ${C.borderPrn}`}}>{f}</span>)}</div>}
+          {meals.map(m=>(
+            <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px",padding:"5px 8px",background:C.bgInset,borderRadius:"4px"}}>
+              <span style={{color:C.textSec,fontSize:"12px",flex:1}}>{m.description}</span>
+              <div style={{display:"flex",gap:"8px",alignItems:"center",flexShrink:0}}>
+                <span style={{fontFamily:"monospace",color:m.color||C.textMid,fontSize:"12px"}}>{m.score}</span>
+                <button onClick={()=>upd(d=>({...d,meals:d.meals.filter(x=>x.id!==m.id)}))} style={{background:"none",border:"none",color:C.textFaint,cursor:"pointer",fontSize:"14px"}}>×</button>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+      <div style={{display:"flex",gap:"6px"}}>
+        <input placeholder="What did you eat?" value={newMeal} onChange={e=>setNewMeal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addMeal()} style={iStyle({flex:1})}/>
+        <button onClick={addMeal} style={aBtn()}>+ Add</button>
+      </div>
+    </div>
+  );
+}
+
+function NotesSection({day,upd}){
+  return(
+    <div style={sec}>
+      <SL>Notes</SL>
+      <textarea value={day.notes||""} onChange={e=>upd(d=>({...d,notes:e.target.value}))} placeholder="Free notes for today..." rows={3}
+        style={{...iStyle({width:"100%",resize:"vertical",lineHeight:"1.6",boxSizing:"border-box"}),background:C.bgInset}}/>
+    </div>
+  );
+}
+
+// ─── WEEK VIEW ────────────────────────────────────────────────────────────────
+function WeekView({days,activeDate,setActiveDate,getWeekDates,onWeekChange}){
+  const [weekOffset,setWeekOffset]=useState(0);
+  // anchor = Monday of the week containing activeDate, then shift by offset
+  const anchorMonday=(()=>{
+    const dt=localDate(activeDate);const dow=dt.getDay();
+    return addDays(activeDate,dow===0?-6:1-dow);
+  })();
+  const monday=addDays(anchorMonday,weekOffset*7);
+  const weekDates=Array.from({length:7},(_,i)=>addDays(monday,i));
+  const priorWeek=weekDates.map(d=>addDays(d,-7));
+
+  // Notify parent of current week's monday for printing
+  useEffect(()=>{
+    if(onWeekChange) onWeekChange(monday);
+  },[monday]);
+
+  // Averages — only past days with data
+  const aSleep=avgSleep(weekDates,days);
+  const pSleep=avgSleep(priorWeek,days);
+  const aSchedMg=avgSchedMg(weekDates,days);
+  const pSchedMg=avgSchedMg(priorWeek,days);
+  const tPrn=totalPrnMg(weekDates,days);
+  const pPrn=totalPrnMg(priorWeek,days);
+  const epCount=episodeCount(weekDates,days);
+  const pEpCount=episodeCount(priorWeek,days);
+
+  // Task + exercise data for donuts
+  const taskDonutData=DEFAULT_TASKS.map((task,i)=>({
+    label:task.label, count:pastOnly(weekDates).filter(d=>(days[d]?.tasks||[]).some(t=>(t.id===task.id||t.label===task.label)&&t.done)).length,
+    color:["#2a6a3a","#2255aa","#8a6a00"][i]
+  }));
+  const exTypes={};
+  pastOnly(weekDates).forEach(d=>{const ex=days[d]?.exercise;if(ex&&ex.label!=="Rest day")exTypes[ex.label]=(exTypes[ex.label]||0)+1;});
+  const exColors=["#2255aa","#2a6a3a","#8a6a00","#cc8800","#cc2200"];
+  const exDonutData=Object.entries(exTypes).map(([label,count],i)=>({label,count,color:exColors[i%exColors.length]}));
+
+  // PRN days
+  const prnDays=weekDates.filter(d=>(days[d]?.clonazepam?.prn||[]).length>0);
+
+  return(
+    <div style={{padding:"18px 22px",maxWidth:"780px"}}>
+      {/* Week nav */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px"}}>
+        <button onClick={()=>setWeekOffset(o=>o-1)} style={{background:"none",border:"none",color:C.textMid,cursor:"pointer",fontSize:"22px",padding:"4px 10px"}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:"12px",color:C.textSec,fontFamily:"monospace"}}>
+            {fmtMed(weekDates[0])} → {fmtMed(weekDates[6])}
+          </div>
+        </div>
+        <button onClick={()=>setWeekOffset(o=>o+1)} style={{background:"none",border:"none",color:C.textMid,cursor:"pointer",fontSize:"22px",padding:"4px 10px"}}>›</button>
+      </div>
+
+      {/* Stat cards */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"7px",marginBottom:"16px"}}>
+        {[
+          {label:"Episodes",value:String(epCount),color:epCount>0?C.red:C.green,curr:epCount,prior:pEpCount,hib:false},
+          {label:"Avg Sleep",value:aSleep?fmtHours(aSleep):"—",color:sleepQualityColor(aSleep),curr:aSleep,prior:pSleep,hib:true,fmt:v=>fmtHours(Math.abs(Math.round(v)))},
+          {label:"PRN mg",value:tPrn.toFixed(1)+"mg",color:tPrn>0?C.orange:C.green,curr:tPrn,prior:pPrn,hib:false,fmt:v=>Math.abs(v).toFixed(1)+"mg"},
+          {label:"Avg Daily Dose",value:aSchedMg?aSchedMg+"mg":"—",color:C.blue,curr:parseFloat(aSchedMg),prior:parseFloat(pSchedMg),hib:false,fmt:v=>Math.abs(v).toFixed(2)+"mg"},
+        ].map(s=>(
+          <div key={s.label} style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:"7px",padding:"10px 8px",textAlign:"center"}}>
+            <div style={{fontSize:"18px",color:s.color,fontFamily:"monospace",fontWeight:"bold"}}>{s.value}</div>
+            <div style={{fontSize:"8px",color:C.textFaint,letterSpacing:"2px",marginTop:"2px"}}>{s.label.toUpperCase()}</div>
+            <div style={{marginTop:"3px",minHeight:"14px"}}>
+              <Delta curr={s.curr} prior={s.prior} higherIsBetter={s.hib} fmt={s.fmt}/>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* 7 day squares — Mon→Sun */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"4px",marginBottom:"16px"}}>
+        {weekDates.map(d=>{
+          const future=d>todayStr();
+          const dd=days[d];
+          const sleepMins=totalSleepMinutes(getSleepForDisplayDate(d,days));
+          const sch=(dd?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+          const prnDay=(dd?.clonazepam?.prn||[]);
+          const prnMg=prnDay.reduce((a,x)=>a+parseFloat(x.mg||0),0);
+          const total=(sch+prnMg).toFixed(1);
+          const hasEp=!!(dd?.episode);
+          const isToday=d===todayStr();
+          return(
+            <div key={d} onClick={()=>setActiveDate(d)} style={{
+              background:hasEp?C.bgEp:isToday?"#dcdaf0":C.bgCard,
+              border:`1px solid ${hasEp?C.borderEp:isToday?"#b8b6d8":C.border}`,
+              borderRadius:"6px",padding:"8px 5px",cursor:"pointer",
+              opacity:future?0.4:1,textAlign:"center",minHeight:"100px",
+              display:"flex",flexDirection:"column",gap:"3px",alignItems:"center"
+            }}>
+              {/* Day label */}
+              <div style={{fontSize:"9px",color:isToday?C.today:C.textFaint,letterSpacing:"1px",fontFamily:"monospace"}}>
+                {localDate(d).toLocaleDateString("en-US",{weekday:"short"}).toUpperCase()}
+              </div>
+              <div style={{fontSize:"13px",color:isToday?C.today:C.text,fontWeight:isToday?"bold":"normal",fontFamily:"monospace"}}>
+                {localDate(d).getDate()}
+              </div>
+              {/* Episode */}
+              {hasEp&&<div style={{fontSize:"14px",color:C.red}}>⚡</div>}
+              {/* Sleep */}
+              {sleepMins!==null&&(
+                <div style={{fontSize:"11px",color:C.sleep,fontFamily:"monospace",fontWeight:"bold"}}>
+                  {fmtHours(sleepMins)}
+                </div>
+              )}
+              {/* Clonazepam */}
+              {parseFloat(total)>0&&(
+                <div style={{fontSize:"11px",color:C.blue,fontFamily:"monospace"}}>{total}mg</div>
+              )}
+              {/* PRN */}
+              {prnMg>0&&(
+                <div style={{fontSize:"11px",color:C.orange,fontFamily:"monospace",fontWeight:"bold"}}>⚠{prnMg.toFixed(1)}mg</div>
+              )}
+              {future&&<div style={{fontSize:"8px",color:C.textFaint,letterSpacing:"1px",marginTop:"2px"}}>UPCOMING</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 7-day squares legend */}
+      <div style={{display:"flex",gap:"14px",flexWrap:"wrap",marginBottom:"16px"}}>
+        <span style={{fontSize:"9px",color:C.sleep}}>■ Sleep hrs</span>
+        <span style={{fontSize:"9px",color:C.blue}}>■ Clonazepam total</span>
+        <span style={{fontSize:"9px",color:C.orange}}>⚠ PRN dose</span>
+        <span style={{fontSize:"9px",color:C.red}}>⚡ Episode</span>
+      </div>
+
+      {/* Episodes detail */}
+      {weekDates.filter(d=>days[d]?.episode).length>0&&(
+        <Card style={{background:C.bgEp,borderColor:C.borderEp,marginBottom:"14px"}}>
+          <div style={{fontSize:"11px",color:C.red,letterSpacing:"2px",marginBottom:"9px",fontWeight:"bold"}}>⚡ EPISODES</div>
+          {weekDates.filter(d=>days[d]?.episode).map(d=>{
+            const ep=days[d].episode;
+            return(
+              <div key={d} onClick={()=>setActiveDate(d)} style={{cursor:"pointer",borderTop:`1px solid ${C.borderEp}`,paddingTop:"7px",marginTop:"7px"}}>
+                <div style={{color:C.red,fontSize:"13px",fontWeight:"bold"}}>{fmtMed(d)}{ep.time?` · ${ep.time}`:""}</div>
+                {ep.trigger&&<div style={{fontSize:"11px",color:C.textSec}}>Trigger: {ep.trigger}</div>}
+                {(ep.bp||ep.hr)&&<div style={{fontFamily:"monospace",fontSize:"11px",color:C.red}}>{ep.bp&&`BP ${ep.bp}`}{ep.bp&&ep.hr&&" · "}{ep.hr&&`HR ${ep.hr}`}</div>}
+                {ep.symptoms&&ep.symptoms.length>0&&<div style={{fontSize:"10px",color:C.textSec,marginTop:"2px"}}>{ep.symptoms.join(", ")}</div>}
+                {ep.resolved_by&&<div style={{fontSize:"10px",color:C.green,marginTop:"2px"}}>Resolved: {ep.resolved_by}</div>}
+                {ep.notes&&<div style={{fontSize:"10px",color:C.textFaint,fontStyle:"italic",marginTop:"2px"}}>{ep.notes}</div>}
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {/* PRN alert card */}
+      {prnDays.length>0&&(
+        <div style={{background:C.bgPrn,border:`2px solid ${C.borderPrn}`,borderRadius:"8px",padding:"13px 16px",marginBottom:"14px"}}>
+          <div style={{fontSize:"12px",letterSpacing:"2px",color:C.orange,fontWeight:"bold",marginBottom:"10px"}}>⚠ PRN DOSES — {prnDays.length} DAY{prnDays.length>1?"S":""} · {tPrn.toFixed(1)}mg TOTAL</div>
+          {prnDays.map(d=>(days[d]?.clonazepam?.prn||[]).map(p=>(
+            <div key={p.id} style={{borderTop:`1px solid ${C.borderPrn}`,paddingTop:"6px",marginTop:"6px"}}>
+              <span style={{fontSize:"13px",color:C.orange,fontFamily:"monospace",fontWeight:"bold"}}>{fmtMed(d)}{p.time?` · ${p.time}`:""} — {p.mg}mg</span>
+              {p.cause&&<div style={{fontSize:"11px",color:C.textSec,marginTop:"2px"}}>{p.cause}</div>}
+            </div>
+          )))}
+        </div>
+      )}
+
+      {/* Clonazepam bars — weekly */}
+      {weekDates.some(d=>{const dd=days[d];return((dd?.clonazepam?.doses||[]).length>0||(dd?.clonazepam?.prn||[]).length>0);})&&(()=>{
+        const wClonaData=weekDates.map(d=>{
+          const dd=days[d];
+          const sch=(dd?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+          const prn=(dd?.clonazepam?.prn||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+          return{date:d,val:sch+prn,prn,hasEp:!!(dd?.episode)};
+        });
+        const wMaxClona=Math.max(...wClonaData.map(x=>x.val),4);
+        return(
+          <Card style={{marginBottom:"14px"}}>
+            <div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",marginBottom:"10px"}}>
+              DAILY CLONAZEPAM · avg {aSchedMg||"—"}mg
+            </div>
+            <BarChart data={wClonaData} maxVal={wMaxClona} height={60}
+              colorFn={item=>item.val>3.5?C.red:C.blue}
+              labelFn={item=>item.val.toFixed(1)}
+              dotFn={item=>item.prn>0?C.orange:item.hasEp?C.red:null}
+              onClickDate={setActiveDate}/>
+            <div style={{display:"flex",gap:"12px",marginTop:"6px"}}>
+              <span style={{fontSize:"8px",color:C.blue}}>■ normal</span>
+              <span style={{fontSize:"8px",color:C.red}}>■ &gt;3.5mg</span>
+              <span style={{fontSize:"8px",color:C.orange}}>● PRN day</span>
+              <span style={{fontSize:"8px",color:C.red}}>● Episode</span>
+            </div>
+          </Card>
+        );
+      })()}
+
+      {/* Sleep pattern */}
+      <Card style={{marginBottom:"14px"}}>
+        <div style={{fontSize:"9px",letterSpacing:"2px",color:C.textFaint,marginBottom:"9px"}}>
+          SLEEP PATTERN · {aSleep?`avg ${fmtHours(aSleep)}`:"no data"}
+          {pSleep!==null&&aSleep!==null&&(
+            <span style={{marginLeft:"8px",color:aSleep>=pSleep?C.green:C.orange,fontSize:"9px"}}>
+              ({aSleep>=pSleep?"+":""}{fmtHours(Math.abs(aSleep-pSleep))} vs prior week)
+            </span>
+          )}
+        </div>
+        {weekDates.map(d=>{
+          const sleepBlocks=getSleepForDisplayDate(d,days);
+          const future=d>todayStr();
+          return(
+            <div key={d} style={{display:"flex",gap:"9px",alignItems:"flex-start",marginBottom:"4px",opacity:future?0.4:1}}>
+              <span style={{fontSize:"10px",color:d===todayStr()?C.today:C.textMid,width:"50px",flexShrink:0,fontFamily:"monospace"}}>
+                {fmtMed(d)}
+              </span>
+              {sleepBlocks.length?(
+                <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                  {sleepBlocks.map(s=>{
+                    const m=calcSleepMinutes(s.from,s.to);
+                    return(
+                      <span key={s.id} style={{fontFamily:"monospace",fontSize:"10px",color:s.quality==="good"?C.green:s.quality==="broken"?C.orange:C.textSec,background:C.bgInset,padding:"2px 6px",borderRadius:"3px"}}>
+                        {s.from}→{s.to}{m!==null?<span style={{color:sleepQualityColor(m),fontSize:"9px"}}> {fmtHours(m)}</span>:null}
+                      </span>
+                    );
+                  })}
+                </div>
+              ):<span style={{fontSize:"10px",color:C.textFaint}}>—</span>}
+            </div>
+          );
+        })}
+        <div style={{display:"flex",gap:"14px",marginTop:"8px",flexWrap:"wrap"}}>
+          <span style={{fontSize:"9px",color:C.green}}>■ good quality</span>
+          <span style={{fontSize:"9px",color:C.orange}}>■ broken/interrupted</span>
+          <span style={{fontSize:"9px",color:C.textSec}}>■ ok/unrated</span>
+          <span style={{fontSize:"9px",color:"#2a9a6a"}}>■ &gt;7h</span>
+          <span style={{fontSize:"9px",color:C.orange}}>■ 5-7h</span>
+          <span style={{fontSize:"9px",color:C.red}}>■ &lt;5h</span>
+        </div>
+      </Card>
+
+      {/* Recovery donuts — bottom */}
+      <Card style={{marginBottom:"14px"}}>
+        <div style={{fontSize:"9px",letterSpacing:"2px",color:C.textFaint,marginBottom:"12px"}}>RECOVERY ACTIVITY</div>
+        <div style={{display:"flex",gap:"24px",justifyContent:"space-around",flexWrap:"wrap"}}>
+          <DonutChart data={taskDonutData} size={90} title="TASKS"/>
+          <DonutChart data={exDonutData.length?exDonutData:[{label:"No exercise logged",count:0,color:C.bgInset}]} size={90} title="EXERCISE"/>
+        </div>
+        {(()=>{
+          const scoredDays=pastOnly(weekDates).map(d=>scoreDayMeals(days[d]?.meals||[])).filter(Boolean);
+          const avg=scoredDays.length?Math.round((scoredDays.reduce((a,x)=>a+x.score,0)/scoredDays.length)*10)/10:null;
+          const color=avg===null?"#aaa":avg>=7?"#3a7a4a":avg>=5?"#7a6a20":"#aa2200";
+          return(
+            <div style={{textAlign:"center",marginTop:"16px",paddingTop:"14px",borderTop:`1px solid ${C.border}`}}>
+              <div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",marginBottom:"6px"}}>NUTRITION · WEEKLY AVG</div>
+              {avg!==null?(
+                <div style={{fontSize:"28px",fontWeight:"bold",color,fontFamily:"monospace"}}>{avg}<span style={{fontSize:"13px",color:C.textFaint}}>/10</span></div>
+              ):<div style={{fontSize:"14px",color:C.textFaint}}>No meals logged</div>}
+            </div>
+          );
+        })()}
+      </Card>
+    </div>
+  );
+}
+
+// ─── MONTH VIEW ───────────────────────────────────────────────────────────────
+function MonthView({days,activeDate,setActiveDate,onMonthChange}){
+  const [monthOffset,setMonthOffset]=useState(0);
+  const base=new Date(localDate(activeDate));base.setMonth(base.getMonth()+monthOffset);
+  const year=base.getFullYear(),month=base.getMonth();
+  const monthName=base.toLocaleDateString("en-US",{month:"long",year:"numeric"});
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const monthDates=Array.from({length:daysInMonth},(_,i)=>`${year}-${String(month+1).padStart(2,"0")}-${String(i+1).padStart(2,"0")}`);
+  const firstDow=new Date(year,month,1).getDay();
+
+  // Notify parent of current month's representative date for printing
+  useEffect(()=>{
+    if(onMonthChange) onMonthChange(`${year}-${String(month+1).padStart(2,"0")}-01`);
+  },[year,month]);
+
+  // Prior month
+  const priorBase=new Date(year,month-1,1);
+  const priorDIM=new Date(priorBase.getFullYear(),priorBase.getMonth()+1,0).getDate();
+  const priorDates=Array.from({length:priorDIM},(_,i)=>`${priorBase.getFullYear()}-${String(priorBase.getMonth()+1).padStart(2,"0")}-${String(i+1).padStart(2,"0")}`);
+
+  const loggedDays=monthDates.filter(d=>days[d]);
+  const aSleep=avgSleep(monthDates,days),pSleep=avgSleep(priorDates,days);
+  const aSchedMg=avgSchedMg(monthDates,days);
+  const tPrn=totalPrnMg(monthDates,days),pPrn=totalPrnMg(priorDates,days);
+  const epDays=monthDates.filter(d=>days[d]?.episode),pEpDays=priorDates.filter(d=>days[d]?.episode);
+  const prnDays=monthDates.filter(d=>(days[d]?.clonazepam?.prn||[]).length>0);
+
+  // Task + exercise donuts
+  const taskDonutData=DEFAULT_TASKS.map((task,i)=>({
+    label:task.label, count:pastOnly(monthDates).filter(d=>(days[d]?.tasks||[]).some(t=>(t.id===task.id||t.label===task.label)&&t.done)).length,
+    color:["#2a6a3a","#2255aa","#8a6a00"][i]
+  }));
+  const exTypes={};
+  pastOnly(monthDates).forEach(d=>{const ex=days[d]?.exercise;if(ex&&ex.label!=="Rest day")exTypes[ex.label]=(exTypes[ex.label]||0)+1;});
+  const exColors=["#2255aa","#2a6a3a","#8a6a00","#cc8800","#cc2200"];
+  const exDonutData=Object.entries(exTypes).map(([label,count],i)=>({label,count,color:exColors[i%exColors.length]}));
+  const exDays=pastOnly(monthDates).filter(d=>days[d]?.exercise&&days[d].exercise.label!=="Rest day");
+  const pExDays=pastOnly(priorDates).filter(d=>days[d]?.exercise&&days[d].exercise.label!=="Rest day");
+
+  // Calendar cell
+  const dayCell=dateStr=>{
+    const dd=days[dateStr];
+    const isToday=dateStr===todayStr(),isActive=dateStr===activeDate,future=dateStr>todayStr();
+    const hasEp=!!(dd?.episode);
+    const prnDay=(dd?.clonazepam?.prn||[]);
+    const prnMg=prnDay.reduce((a,x)=>a+parseFloat(x.mg||0),0);
+    const sch=(dd?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+    const totalMg=sch+prnMg;
+    const sleepMins=totalSleepMinutes(getSleepForDisplayDate(dateStr,days));
+    const dayNum=parseInt(dateStr.split("-")[2],10);
+    const parts=[];
+    if(sleepMins)parts.push(<span key="sl" style={{color:C.textSec}}>{fmtHours(sleepMins)}</span>);
+    if(totalMg>0)parts.push(<span key="mg" style={{color:C.textSec}}>{totalMg.toFixed(1)}mg</span>);
+    if(prnMg>0)parts.push(<span key="prn" style={{color:C.textSec}}>⚠{prnMg.toFixed(1)}</span>);
+    if(hasEp)parts.push(<span key="ep" style={{color:C.red,fontWeight:"bold",fontSize:"18px",lineHeight:"1"}}>⚡</span>);
+    return(
+      <div key={dateStr} onClick={()=>setActiveDate(dateStr)} style={{
+        background:hasEp?C.bgEp:isActive?"#dcdaf0":isToday?"#e4e2f4":"transparent",
+        border:`1px solid ${hasEp?C.borderEp:isActive?"#b0aad0":isToday?"#c0bed8":C.bgInset}`,
+        borderRadius:"4px",padding:"3px 4px",cursor:"pointer",opacity:future?0.4:1,
+        minHeight:"52px",display:"flex",flexDirection:"column",gap:"2px"
+      }}>
+        <div style={{fontSize:"11px",fontFamily:"monospace",color:isToday?C.today:isActive?C.text:C.textSec,fontWeight:isToday?"bold":"normal",textAlign:"center"}}>
+          {dayNum}
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"2px",alignItems:"center",fontSize:"9px",fontFamily:"monospace",lineHeight:1.2}}>
+          {parts.map((p,i)=>(
+            <span key={i} style={{display:"contents"}}>
+              {i>0&&<span style={{color:C.textFaint}}>|</span>}
+              {p}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const gridCells=[];
+  for(let i=0;i<firstDow;i++)gridCells.push(<div key={`e${i}`}/>);
+  monthDates.forEach(d=>gridCells.push(dayCell(d)));
+
+  // Sleep bar data
+  const sleepBarData=monthDates.map(d=>({date:d,val:totalSleepMinutes(getSleepForDisplayDate(d,days))||0}));
+  const maxSleep=Math.max(...sleepBarData.map(x=>x.val),480);
+
+  // Clona bar data
+  const clonaBarData=monthDates.map(d=>{
+    const dd=days[d];
+    const sch=(dd?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+    const prn=(dd?.clonazepam?.prn||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+    return{date:d,val:sch+prn,prn,hasEp:!!(dd?.episode)};
+  });
+  const maxClona=Math.max(...clonaBarData.map(x=>x.val),4);
+
+  return(
+    <div style={{padding:"16px 22px",maxWidth:"780px"}}>
+      {/* Nav */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px"}}>
+        <button onClick={()=>setMonthOffset(o=>o-1)} style={{background:"none",border:"none",color:C.textMid,cursor:"pointer",fontSize:"22px",padding:"4px 10px"}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:"15px",color:C.text}}>{monthName}</div>
+          <div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",marginTop:"2px"}}>{loggedDays.length} DAY{loggedDays.length!==1?"S":""} LOGGED</div>
+        </div>
+        <button onClick={()=>setMonthOffset(o=>o+1)} style={{background:"none",border:"none",color:C.textMid,cursor:"pointer",fontSize:"22px",padding:"4px 10px"}}>›</button>
+      </div>
+
+      {/* Stats */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"6px",marginBottom:"14px"}}>
+        {[
+          {label:"Episodes",value:String(epDays.length),color:epDays.length>0?C.red:C.green,curr:epDays.length,prior:pEpDays.length,hib:false},
+          {label:"Avg Sleep",value:aSleep?fmtHours(aSleep):"—",color:sleepQualityColor(aSleep),curr:aSleep,prior:pSleep,hib:true,fmt:v=>fmtHours(Math.abs(Math.round(v)))},
+          {label:"Avg Daily Dose",value:aSchedMg?aSchedMg+"mg":"—",color:C.blue,curr:parseFloat(aSchedMg),prior:null},
+          {label:"PRN mg total",value:tPrn.toFixed(1)+"mg",color:tPrn>5?C.orange:C.textSec,curr:tPrn,prior:pPrn,hib:false,fmt:v=>Math.abs(v).toFixed(1)+"mg"},
+        ].map(s=>(
+          <div key={s.label} style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:"6px",padding:"10px 8px",textAlign:"center"}}>
+            <div style={{fontSize:"16px",color:s.color,fontFamily:"monospace",fontWeight:"bold"}}>{s.value}</div>
+            <div style={{fontSize:"8px",color:C.textFaint,letterSpacing:"2px",marginTop:"2px"}}>{s.label.toUpperCase()}</div>
+            {s.curr!==undefined&&<div style={{marginTop:"3px",minHeight:"14px"}}><Delta curr={s.curr} prior={s.prior} higherIsBetter={s.hib||false} fmt={s.fmt}/></div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Calendar */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px",marginBottom:"3px"}}>
+        {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d=>(
+          <div key={d} style={{fontSize:"9px",color:C.textFaint,textAlign:"center",padding:"2px 0",fontFamily:"monospace"}}>{d}</div>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px",marginBottom:"10px"}}>
+        {gridCells}
+      </div>
+      {/* Legend */}
+      <div style={{display:"flex",gap:"14px",flexWrap:"wrap",marginBottom:"18px",padding:"6px 0"}}>
+        {[
+          {color:C.textSec,label:"Sleep Hours"},
+          {color:C.textSec,label:"Clonazepam Total Dose"},
+          {color:C.textSec,label:"PRN mg's"},
+          {color:C.red,label:"⚡ Episode Happened"},
+        ].map((l,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:"5px"}}>
+            <div style={{width:"10px",height:"10px",borderRadius:"2px",background:l.color,flexShrink:0}}/>
+            <span style={{fontSize:"10px",color:C.textSec}}>{l.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Episodes */}
+      {epDays.length>0&&(
+        <div style={{background:C.bgEp,border:`1px solid ${C.borderEp}`,borderRadius:"7px",padding:"12px 15px",marginBottom:"12px"}}>
+          <div style={{fontSize:"10px",color:C.red,letterSpacing:"2px",marginBottom:"9px",fontWeight:"bold"}}>⚡ EPISODES THIS MONTH — {epDays.length}</div>
+          {epDays.map(d=>{const ep=days[d]?.episode;if(!ep)return null;return(
+            <div key={d} onClick={()=>setActiveDate(d)} style={{cursor:"pointer",borderTop:`1px solid ${C.borderEp}`,paddingTop:"6px",marginTop:"6px"}}>
+              <div style={{color:C.red,fontSize:"13px",fontWeight:"bold"}}>{fmt(d)}{ep.time?` · ${ep.time}`:""}</div>
+              {ep.trigger&&<div style={{fontSize:"11px",color:C.textSec}}>Trigger: {ep.trigger}</div>}
+              {(ep.bp||ep.hr)&&<div style={{fontFamily:"monospace",fontSize:"11px",color:C.red}}>{ep.bp&&`BP ${ep.bp}`}{ep.bp&&ep.hr&&" · "}{ep.hr&&`HR ${ep.hr}`}</div>}
+              {ep.resolved_by&&<div style={{fontSize:"10px",color:C.green}}>Resolved: {ep.resolved_by}</div>}
+            </div>
+          );})}
+        </div>
+      )}
+
+      {/* PRN alert */}
+      {prnDays.length>0&&(
+        <div style={{background:C.bgPrn,border:`2px solid ${C.borderPrn}`,borderRadius:"8px",padding:"12px 15px",marginBottom:"12px"}}>
+          <div style={{fontSize:"12px",color:C.orange,letterSpacing:"2px",marginBottom:"9px",fontWeight:"bold"}}>⚠ PRN — {prnDays.length} DAY{prnDays.length>1?"S":""} · {tPrn.toFixed(1)}mg</div>
+          {prnDays.map(d=>(days[d]?.clonazepam?.prn||[]).map((p,i)=>(
+            <div key={`${d}-${i}`} style={{borderTop:`1px solid ${C.borderPrn}`,paddingTop:"5px",marginTop:"5px"}}>
+              <span style={{fontSize:"13px",color:C.orange,fontFamily:"monospace",fontWeight:"bold"}}>{fmtShort(d)}{p.time?` · ${p.time}`:""} — {p.mg}mg</span>
+              {p.cause&&<div style={{fontSize:"10px",color:C.textSec,marginTop:"2px"}}>{p.cause}</div>}
+            </div>
+          )))}
+        </div>
+      )}
+
+      {/* Clonazepam bar chart */}
+      {clonaBarData.some(x=>x.val>0)&&(
+        <Card style={{marginBottom:"12px"}}>
+          <div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",marginBottom:"10px"}}>
+            DAILY CLONAZEPAM{aSchedMg?` · avg ${aSchedMg}mg`:""}
+          </div>
+          <BarChart
+            data={clonaBarData}
+            maxVal={maxClona}
+            height={60}
+            colorFn={item=>item.val>3.5?C.red:C.blue}
+            labelFn={item=>item.val.toFixed(1)}
+            dotFn={item=>item.prn>0?C.orange:item.hasEp?C.red:null}
+            onClickDate={setActiveDate}
+          />
+          <div style={{display:"flex",gap:"12px",marginTop:"6px"}}>
+            <span style={{fontSize:"8px",color:C.blue}}>■ normal</span>
+            <span style={{fontSize:"8px",color:C.red}}>■ &gt;3.5mg</span>
+            <span style={{fontSize:"8px",color:C.orange}}>● PRN day</span>
+            <span style={{fontSize:"8px",color:C.red}}>● Episode day</span>
+          </div>
+        </Card>
+      )}
+
+      {/* Sleep bar chart */}
+      {sleepBarData.some(x=>x.val>0)&&(
+        <Card style={{marginBottom:"12px"}}>
+          <div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",marginBottom:"10px"}}>
+            SLEEP HOURS{aSleep?` · avg ${fmtHours(aSleep)}`:""}
+          </div>
+          <BarChart
+            data={sleepBarData}
+            maxVal={maxSleep}
+            height={70}
+            colorFn={item=>sleepQualityColor(item.val)}
+            labelFn={item=>fmtHours(item.val)}
+            dotFn={item=>days[item.date]?.episode?C.red:null}
+            onClickDate={setActiveDate}
+          />
+        </Card>
+      )}
+
+      {/* Recovery donuts — bottom */}
+      <Card style={{marginBottom:"14px"}}>
+        <div style={{fontSize:"9px",letterSpacing:"2px",color:C.textFaint,marginBottom:"12px"}}>RECOVERY ACTIVITY · {exDays.length} exercise day{exDays.length!==1?"s":""}
+          <Delta curr={exDays.length} prior={pExDays.length}/>
+        </div>
+        <div style={{display:"flex",gap:"24px",justifyContent:"space-around",flexWrap:"wrap"}}>
+          <DonutChart data={taskDonutData} size={90} title="TASKS"/>
+          <DonutChart data={exDonutData.length?exDonutData:[{label:"None logged",count:0,color:C.bgInset}]} size={90} title="EXERCISE"/>
+        </div>
+        {(()=>{
+          const scoredDays=pastOnly(monthDates).map(d=>scoreDayMeals(days[d]?.meals||[])).filter(Boolean);
+          const avg=scoredDays.length?Math.round((scoredDays.reduce((a,x)=>a+x.score,0)/scoredDays.length)*10)/10:null;
+          const color=avg===null?"#aaa":avg>=7?"#3a7a4a":avg>=5?"#7a6a20":"#aa2200";
+          return(
+            <div style={{textAlign:"center",marginTop:"16px",paddingTop:"14px",borderTop:`1px solid ${C.border}`}}>
+              <div style={{fontSize:"9px",color:C.textFaint,letterSpacing:"2px",marginBottom:"6px"}}>NUTRITION · MONTHLY AVG</div>
+              {avg!==null?(
+                <div style={{fontSize:"28px",fontWeight:"bold",color,fontFamily:"monospace"}}>{avg}<span style={{fontSize:"13px",color:C.textFaint}}>/10</span></div>
+              ):<div style={{fontSize:"14px",color:C.textFaint}}>No meals logged</div>}
+            </div>
+          );
+        })()}
+      </Card>
+    </div>
+  );
+}
+
+// ─── EXPORT / IMPORT ──────────────────────────────────────────────────────────
+function exportData(days){
+  const payload={version:1,exported:new Date().toISOString(),days};
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  const date=new Date().toISOString().slice(0,10);
+  a.href=url;a.download=`munir-health-log-${date}.json`;
+  document.body.appendChild(a);a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+
+function importData(e,setDays,setSaving){
+  const file=e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async(ev)=>{
+    try{
+      const payload=JSON.parse(ev.target.result);
+      const imported=payload.days||payload;
+      setDays(prev=>({...prev,...imported}));
+      setSaving(true);
+      try{
+        await fetch(SUPABASE_URL+"/rest/v1/health_log?id=eq.munir",{
+          method:"PATCH",
+          headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY,"Content-Type":"application/json","Prefer":"return=minimal"},
+          body:JSON.stringify({data:imported,updated_at:new Date().toISOString()})
+        });
+      }catch(_){}
+      setTimeout(()=>setSaving(false),1500);
+      alert("Data imported successfully. Your data is now synced to the cloud.");
+    }catch(err){
+      alert("Import failed — file may be corrupted or wrong format.");
+    }
+  };
+  reader.readAsText(file);
+  e.target.value="";
+}
+
+// ─── PRINT REPORT ─────────────────────────────────────────────────────────────
+function printReport(view,activeDate,days,getWeekDates){
+  const CSS=`*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#111;background:#fff;padding:20px 28px;}
+h1{font-size:18px;font-weight:bold;margin-bottom:2px;}
+.sub{font-size:10px;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px;}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;}
+.stat{border:1px solid #ccc;border-radius:4px;padding:10px;text-align:center;}
+.sv{font-size:22px;font-weight:bold;font-family:monospace;}
+.sl{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-top:2px;}
+.sec{page-break-inside:avoid;margin-bottom:12px;}
+.st{font-size:10px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;border-bottom:1.5px solid #333;padding-bottom:3px;margin-bottom:7px;}
+.st.red{color:#cc2200;border-color:#cc2200;}.st.orange{color:#cc8800;border-color:#cc8800;}.st.blue{color:#2255aa;border-color:#2255aa;}.st.green{color:#2a7a4a;border-color:#2a7a4a;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{background:#f0ece0;padding:5px 8px;text-align:left;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;border-bottom:2px solid #ccc;}
+td{padding:5px 8px;border-bottom:1px solid #e8e4dc;vertical-align:top;}
+tr.prn td{background:#fef8ec;}
+.eb{border-left:3px solid #cc2200;padding:6px 10px;margin-bottom:6px;background:#fef0ee;font-size:12px;}
+.pb{border-left:3px solid #cc8800;padding:6px 10px;margin-bottom:6px;background:#fef8ec;font-size:12px;}
+.note{font-style:italic;color:#555;font-size:11px;}
+.cols2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}
+.cols3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:14px;}
+.foot{font-size:10px;color:#aaa;border-top:1px solid #ddd;padding-top:7px;margin-top:16px;}
+.red{color:#cc2200;}.blue{color:#2255aa;}.orange{color:#cc8800;}.green{color:#2a7a4a;}
+@media print{@page{margin:.6cm;size:letter;}body{padding:0;}}`;
+
+  const today=todayStr();
+  const genDate=new Date().toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+
+  // ── DAILY ──────────────────────────────────────────────────────────────────
+  if(view==="day"){
+    const d=activeDate;
+    const dd=days[d]||{};
+    const sleepMins=totalSleepMinutes(getSleepForDisplayDate(d,days));
+    const sleepBlocks=getSleepForDisplayDate(d,days)||[];
+    const doses=dd.clonazepam?.doses||[];
+    const prnList=dd.clonazepam?.prn||[];
+    const schMg=doses.reduce((a,x)=>a+parseFloat(x.mg||0),0);
+    const prnMg=prnList.reduce((a,x)=>a+parseFloat(x.mg||0),0);
+    const totalMg=schMg+prnMg;
+    const ep=dd.episode;
+    const dayLabel=localDate(d).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"}).toUpperCase();
+
+    const epBlock=ep?`<div class="sec"><div class="st red">&#9889; AUTONOMIC EPISODE</div>
+<div class="eb">
+<b>${ep.time||""}${ep.trigger?" · Trigger: "+ep.trigger:""}</b><br>
+${ep.bp||ep.hr?`<span class="red"><b>${ep.bp?"BP "+ep.bp:"BP Elevated (not measured)"} ${ep.hr?"HR "+ep.hr+"bpm":"HR Elevated (not measured)bpm"}</b></span><br>`:""}
+${ep.symptoms&&ep.symptoms.length?`Symptoms: ${ep.symptoms.join(", ")}<br>`:""}
+${ep.resolved_by?`<span class="green">Resolved by: ${ep.resolved_by}</span><br>`:""}
+${ep.notes?`<div class="note" style="margin-top:4px">${ep.notes}</div>`:""}
+</div></div>`:"";
+
+    const doseRows=doses.map(x=>`<tr><td>${x.time||"—"}</td><td class="blue"><b>${x.mg}mg</b></td><td>Scheduled</td></tr>`).join("")+
+      prnList.map(p=>`<tr class="prn"><td>${p.time||"—"}</td><td class="orange"><b>${p.mg}mg</b></td><td>PRN${p.cause?" · "+p.cause:""}</td></tr>`).join("");
+
+    const sleepRows=sleepBlocks.map(s=>{
+      const m=calcSleepMinutes(s.from,s.to);
+      return`<tr><td>${s.from}</td><td>${s.to}</td><td>${m!==null?fmtHours(m):"—"}</td><td>${s.quality||"—"}</td></tr>`;
+    }).join("");
+
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Daily Report</title><style>${CSS}</style></head><body>
+<h1>Daily Report</h1>
+<div class="sub">${dayLabel} &middot; ASD &middot; ADHD &middot; CPTSD &middot; TRD</div>
+<div class="stats">
+<div class="stat"><div class="sv ${ep?"red":"green"}">${ep?"&#9889; Yes":"No"}</div><div class="sl">Episode</div></div>
+<div class="stat"><div class="sv blue">${totalMg.toFixed(2)}mg</div><div class="sl">Clonazepam</div></div>
+<div class="stat"><div class="sv orange">${prnMg>0?prnMg.toFixed(1)+"mg":"—"}</div><div class="sl">PRN</div></div>
+<div class="stat"><div class="sv">${sleepMins?fmtHours(sleepMins):"—"}</div><div class="sl">Sleep</div></div>
+</div>
+${epBlock}
+<div class="sec"><div class="st blue">CLONAZEPAM &middot; TOTAL ${totalMg.toFixed(2)}MG</div>
+<table><tr><th>Time</th><th>Dose</th><th>Type</th></tr>${doseRows}</table></div>
+<div class="sec"><div class="st">SLEEP &middot; ${sleepMins?fmtHours(sleepMins):"—"}</div>
+<table><tr><th>From</th><th>To</th><th>Duration</th><th>Quality</th></tr>${sleepRows||"<tr><td colspan='4' style='color:#999'>No sleep logged</td></tr>"}</table></div>
+${dd.notes?`<div class="sec"><div class="st">NOTES</div><p class="note">${dd.notes}</p></div>`:""}
+<div class="foot">Generated ${genDate} &middot; Press Ctrl+P to save as PDF</div>
+</body></html>`;
+    _openPrint(html);return;
+  }
+
+  // ── WEEKLY ─────────────────────────────────────────────────────────────────
+  if(view==="week"){
+    const dt=localDate(activeDate);const dow=dt.getDay();
+    const monday=addDays(activeDate,dow===0?-6:1-dow);
+    const wDates=Array.from({length:7},(_,i)=>addDays(monday,i));
+    const past=wDates.filter(d=>d<=today);
+    const label=`${fmtMed(wDates[0])} – ${fmtMed(wDates[6])}`;
+
+    const epDays=wDates.filter(d=>days[d]?.episode);
+    const prnAllDays=wDates.filter(d=>(days[d]?.clonazepam?.prn||[]).length>0);
+    const aSleep=avgSleep(wDates,days);
+    const tPrn=totalPrnMg(wDates,days);
+    const aSchedMg=avgSchedMg(wDates,days);
+
+    const epBlocks=epDays.map(d=>{const ep=days[d].episode;return`<div class="eb">
+<b>${fmtShort(d)}${ep.time?" · "+ep.time:""}</b>${ep.trigger?" · "+ep.trigger:""}<br>
+${ep.bp||ep.hr?`<span class="red"><b>${ep.bp?"BP "+ep.bp:"BP Elevated (not measured)"} ${ep.hr?"HR "+ep.hr+"bpm":"HR Elevated (not measured)bpm"}</b></span><br>`:""}
+${ep.symptoms&&ep.symptoms.length?ep.symptoms.join(", ")+"<br>":""}
+${ep.resolved_by?`<span class="green">Resolved: ${ep.resolved_by}</span>`:""}
+</div>`;}).join("")||"<p style='color:#999;font-size:12px'>No episodes this week</p>";
+
+    const prnBlocks=prnAllDays.map(d=>(days[d].clonazepam.prn||[]).map(p=>`<div class="pb"><b class="orange">${fmtShort(d)}${p.time?" · "+p.time:""} — ${p.mg}mg</b>${p.cause?"<br>"+p.cause:""}</div>`).join("")).join("")||"<p style='color:#999;font-size:12px'>No PRN doses this week</p>";
+
+    const clonaRows=wDates.map(d=>{
+      if(d>today)return"";
+      const dd=days[d];const sch=(dd?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);const prn=(dd?.clonazepam?.prn||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);
+      return`<tr${prn>0?' class="prn"':''}><td>${fmtShort(d)}</td><td class="blue">${sch.toFixed(2)}mg</td><td class="orange">${prn>0?prn.toFixed(1)+"mg":"—"}</td><td><b>${(sch+prn).toFixed(2)}mg</b></td></tr>`;
+    }).join("");
+
+    const sleepRows=wDates.map(d=>{
+      if(d>today)return"";
+      const m=totalSleepMinutes(getSleepForDisplayDate(d,days));
+      return`<tr><td>${fmtShort(d)}</td><td><b style="color:${m?sleepQualityColor(m):"#aaa"}">${m?fmtHours(m):"—"}</b></td></tr>`;
+    }).join("");
+
+    // tasks donut SVG
+    const taskCounts=DEFAULT_TASKS.map((task,i)=>({label:task.label,count:past.filter(d=>(days[d]?.tasks||[]).some(t=>(t.id===task.id||t.label===task.label)&&t.done)).length,color:["#2a6a3a","#2255aa","#8a6a00"][i]}));
+    const exTypes2={};past.forEach(d=>{const ex=days[d]?.exercise;if(ex&&ex.label!=="Rest day")exTypes2[ex.label]=(exTypes2[ex.label]||0)+1;});
+    const exArr=Object.entries(exTypes2).map(([label,count],i)=>({label,count,color:["#2255aa","#2a6a3a","#8a6a00","#cc8800"][i%4]}));
+    const scoredDays=past.map(d=>scoreDayMeals(days[d]?.meals||[])).filter(Boolean);
+    const avgNutr=scoredDays.length?Math.round((scoredDays.reduce((a,x)=>a+x.score,0)/scoredDays.length)*10)/10:null;
+    const nutrColor=avgNutr===null?"#aaa":avgNutr>=7?"#3a7a4a":avgNutr>=5?"#7a6a20":"#aa2200";
+
+    function makeSVG(items,size){
+      const total=items.reduce((a,x)=>a+x.count,0);if(!total)return`<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${size/2}" cy="${size/2}" r="${size/2-2}" fill="#eee"/></svg>`;
+      const r=size/2,ri=r*0.5;let angle=-Math.PI/2;
+      const paths=items.map(item=>{const slice=(item.count/total)*2*Math.PI;const x1=r+r*Math.cos(angle),y1=r+r*Math.sin(angle),x2=r+r*Math.cos(angle+slice),y2=r+r*Math.sin(angle+slice);const xi1=r+ri*Math.cos(angle),yi1=r+ri*Math.sin(angle),xi2=r+ri*Math.cos(angle+slice),yi2=r+ri*Math.sin(angle+slice);const large=slice>Math.PI?1:0;const p=`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${ri},${ri} 0 ${large},0 ${xi1},${yi1} Z`;angle+=slice;return`<path d="${p}" fill="${item.color}"/>`;});
+      return`<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${paths.join("")}</svg>`;
+    }
+    function makeLegend(items){return items.filter(x=>x.count>0).map(x=>`<span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px;font-size:10px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${x.color}"></span>${x.label} x${x.count}</span>`).join("")||"<span style='color:#999;font-size:11px'>None logged</span>";}
+
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Weekly Report</title><style>${CSS}</style></head><body>
+<h1>Weekly Report &mdash; ${label}</h1>
+<div class="sub">ASD &middot; ADHD &middot; CPTSD &middot; Treatment-Resistant Depression</div>
+<div class="stats">
+<div class="stat"><div class="sv red">${epDays.length}</div><div class="sl">Episodes</div></div>
+<div class="stat"><div class="sv blue">${aSchedMg||"—"}mg</div><div class="sl">Avg Daily Dose</div></div>
+<div class="stat"><div class="sv orange">${tPrn>0?tPrn.toFixed(1)+"mg":"—"}</div><div class="sl">PRN Total</div></div>
+<div class="stat"><div class="sv">${aSleep?fmtHours(aSleep):"—"}</div><div class="sl">Avg Sleep</div></div>
+</div>
+<div class="cols2">
+<div>
+<div class="sec"><div class="st red">&#9889; Episodes</div>${epBlocks}</div>
+<div class="sec"><div class="st orange">&#9888; PRN &middot; ${tPrn>0?tPrn.toFixed(1)+"mg":"0mg"}</div>${prnBlocks}</div>
+</div>
+<div>
+<div class="sec"><div class="st blue">Clonazepam</div><table><tr><th>Date</th><th>Sched</th><th>PRN</th><th>Total</th></tr>${clonaRows}</table></div>
+<div class="sec"><div class="st">Sleep</div><table><tr><th>Night</th><th>Hrs</th></tr>${sleepRows}</table></div>
+</div>
+</div>
+<div class="cols3">
+<div class="sec"><div class="st green">Tasks</div>${makeSVG(taskCounts,80)}<div style="margin-top:6px">${makeLegend(taskCounts)}</div></div>
+<div class="sec"><div class="st blue">Exercise</div>${makeSVG(exArr,80)}<div style="margin-top:6px">${makeLegend(exArr)||"<span style='color:#999;font-size:11px'>None logged</span>"}</div></div>
+<div class="sec"><div class="st">Nutrition</div>${avgNutr!==null?`<div style="font-size:28px;font-weight:bold;color:${nutrColor};font-family:monospace">${avgNutr}<span style="font-size:13px;color:#888">/10 avg</span></div>`:"<p style='color:#999;font-size:12px'>No meals logged</p>"}</div>
+</div>
+<div class="foot">Generated ${genDate}</div>
+</body></html>`;
+    _openPrint(html);return;
+  }
+
+  // ── MONTHLY ────────────────────────────────────────────────────────────────
+  {
+    const base2=localDate(activeDate);const y=base2.getFullYear(),mo=base2.getMonth();
+    const dim=new Date(y,mo+1,0).getDate();
+    const mDates=Array.from({length:dim},(_,i)=>`${y}-${String(mo+1).padStart(2,"0")}-${String(i+1).padStart(2,"0")}`);
+    const past=mDates.filter(d=>d<=today);
+    const mLabel=base2.toLocaleDateString("en-US",{month:"long",year:"numeric"});
+
+    const epDays=mDates.filter(d=>days[d]?.episode);
+    const prnAllDays=mDates.filter(d=>(days[d]?.clonazepam?.prn||[]).length>0);
+    const aSleep=avgSleep(mDates,days);
+    const tPrn=totalPrnMg(mDates,days);
+    const aSchedMg=avgSchedMg(mDates,days);
+
+    const epBlocks=epDays.map(d=>{const ep=days[d].episode;return`<div class="eb"><b>${fmt(d)}${ep.time?" · "+ep.time:""}</b>${ep.trigger?"<br>Trigger: "+ep.trigger:""}<br>${ep.bp||ep.hr?`<span class="red"><b>${ep.bp?"BP "+ep.bp:"BP Elevated (not measured)"} ${ep.hr?"HR "+ep.hr+"bpm":"HR Elevated (not measured)bpm"}</b></span><br>`:""}${ep.resolved_by?`<span class="green">Resolved: ${ep.resolved_by}</span>`:""}${ep.symptoms&&ep.symptoms.length?"<br>"+ep.symptoms.join(", "):""}</div>`;}).join("")||"<p style='color:#999;font-size:12px'>No episodes this month</p>";
+    const prnBlocks=prnAllDays.map(d=>(days[d].clonazepam.prn||[]).map(p=>`<div class="pb"><b class="orange">${fmtShort(d)}${p.time?" · "+p.time:""} &mdash; ${p.mg}mg</b>${p.cause?"<br>"+p.cause:""}</div>`).join("")).join("")||"<p style='color:#999;font-size:12px'>No PRN doses this month</p>";
+
+    const clonaRows=past.map(d=>{const dd=days[d];const sch=(dd?.clonazepam?.doses||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);const prn=(dd?.clonazepam?.prn||[]).reduce((a,x)=>a+parseFloat(x.mg||0),0);return`<tr${prn>0?' class="prn"':''}><td>${fmtShort(d)}</td><td class="blue">${sch.toFixed(2)}mg</td><td class="orange">${prn>0?prn.toFixed(1)+"mg":"&mdash;"}</td><td><b>${(sch+prn).toFixed(2)}mg</b></td></tr>`;}).join("");
+    const sleepRows=past.map(d=>{const m=totalSleepMinutes(getSleepForDisplayDate(d,days));return`<tr><td>${fmtShort(d)}</td><td><b style="color:${m?sleepQualityColor(m):"#aaa"}">${m?fmtHours(m):"&mdash;"}</b></td></tr>`;}).join("");
+
+    const taskCounts=DEFAULT_TASKS.map((task,i)=>({label:task.label,count:past.filter(d=>(days[d]?.tasks||[]).some(t=>(t.id===task.id||t.label===task.label)&&t.done)).length,color:["#2a6a3a","#2255aa","#8a6a00"][i]}));
+    const exTypes2={};past.forEach(d=>{const ex=days[d]?.exercise;if(ex&&ex.label!=="Rest day")exTypes2[ex.label]=(exTypes2[ex.label]||0)+1;});
+    const exArr=Object.entries(exTypes2).map(([label,count],i)=>({label,count,color:["#2255aa","#2a6a3a","#8a6a00","#cc8800"][i%4]}));
+    const scoredDays=past.map(d=>scoreDayMeals(days[d]?.meals||[])).filter(Boolean);
+    const avgNutr=scoredDays.length?Math.round((scoredDays.reduce((a,x)=>a+x.score,0)/scoredDays.length)*10)/10:null;
+    const nutrColor=avgNutr===null?"#aaa":avgNutr>=7?"#3a7a4a":avgNutr>=5?"#7a6a20":"#aa2200";
+
+    function makeSVG(items,size){const total=items.reduce((a,x)=>a+x.count,0);if(!total)return`<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${size/2}" cy="${size/2}" r="${size/2-2}" fill="#eee"/></svg>`;const r=size/2,ri=r*0.5;let angle=-Math.PI/2;const paths=items.map(item=>{const slice=(item.count/total)*2*Math.PI;const x1=r+r*Math.cos(angle),y1=r+r*Math.sin(angle),x2=r+r*Math.cos(angle+slice),y2=r+r*Math.sin(angle+slice);const xi1=r+ri*Math.cos(angle),yi1=r+ri*Math.sin(angle),xi2=r+ri*Math.cos(angle+slice),yi2=r+ri*Math.sin(angle+slice);const large=slice>Math.PI?1:0;const p=`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${ri},${ri} 0 ${large},0 ${xi1},${yi1} Z`;angle+=slice;return`<path d="${p}" fill="${item.color}"/>`;});return`<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${paths.join("")}</svg>`;}
+    function makeLegend(items){return items.filter(x=>x.count>0).map(x=>`<span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px;font-size:10px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${x.color}"></span>${x.label} x${x.count}</span>`).join("")||"<span style='color:#999;font-size:11px'>None logged</span>";}
+
+    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Monthly Report</title><style>${CSS}</style></head><body>
+<h1>Monthly Report &mdash; ${mLabel}</h1>
+<div class="sub">ASD &middot; ADHD &middot; CPTSD &middot; Treatment-Resistant Depression</div>
+<div class="stats">
+<div class="stat"><div class="sv red">${epDays.length}</div><div class="sl">Episodes</div></div>
+<div class="stat"><div class="sv blue">${aSchedMg||"&mdash;"}mg</div><div class="sl">Avg Daily Dose</div></div>
+<div class="stat"><div class="sv orange">${tPrn>0?tPrn.toFixed(1)+"mg":"&mdash;"}</div><div class="sl">PRN Total</div></div>
+<div class="stat"><div class="sv">${aSleep?fmtHours(aSleep):"&mdash;"}</div><div class="sl">Avg Sleep</div></div>
+</div>
+<div class="cols2">
+<div class="sec"><div class="st red">&#9889; Episodes</div>${epBlocks}</div>
+<div class="sec"><div class="st orange">&#9888; PRN Doses</div>${prnBlocks}</div>
+</div>
+<div class="cols2">
+<div class="sec"><div class="st blue">CLONAZEPAM &middot; AVG ${aSchedMg||"&mdash;"}MG/DAY</div><table><tr><th>Date</th><th>Sched</th><th>PRN</th><th>Total</th></tr>${clonaRows||"<tr><td colspan='4' style='color:#999'>No data</td></tr>"}</table></div>
+<div class="sec"><div class="st">SLEEP &middot; AVG ${aSleep?fmtHours(aSleep):"&mdash;"}</div><table><tr><th>Night</th><th>Hrs</th></tr>${sleepRows||"<tr><td colspan='2' style='color:#999'>No data</td></tr>"}</table></div>
+</div>
+<div class="cols3">
+<div class="sec"><div class="st green">Tasks</div>${makeSVG(taskCounts,80)}<div style="margin-top:6px">${makeLegend(taskCounts)}</div></div>
+<div class="sec"><div class="st blue">Exercise</div>${makeSVG(exArr,80)}<div style="margin-top:6px">${makeLegend(exArr)||"<span style='color:#999;font-size:11px'>None logged</span>"}</div></div>
+<div class="sec"><div class="st">Nutrition</div>${avgNutr!==null?`<div style="font-size:28px;font-weight:bold;color:${nutrColor};font-family:monospace">${avgNutr}<span style="font-size:13px;color:#888">/10 avg</span></div>`:"<p style='color:#999;font-size:12px'>No meals logged</p>"}</div>
+</div>
+<div class="foot">Generated ${genDate} &middot; Ctrl+P &rarr; Save as PDF</div>
+</body></html>`;
+    _openPrint(html);
+  }
+}
+
+function _openPrint(html){
+  const blob=new Blob([html],{type:"text/html;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.target="_blank";a.rel="noopener";
+  document.body.appendChild(a);a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
+
+
+
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<Tracker/>);
+  </script>
+</body>
+</html>
